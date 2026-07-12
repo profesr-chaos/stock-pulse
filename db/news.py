@@ -68,6 +68,7 @@ def get_news_by_short_name(short_name: str, limit: int = 50, since: str = None) 
                 WHERE short_name = ? 
                 ORDER BY publish_time DESC LIMIT ?
             """, (short_name, limit)).fetchall()
+
         return [dict(row) for row in rows]
 
 

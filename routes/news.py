@@ -76,6 +76,8 @@ def get_news_by_symbol(
         items = get_news_by_short_name(short_name=sym, since=since)
         for item in items:
             news.append(db_to_news(item))
+
+    print(len(news))
     return NewsListResponse(results=news)
 
 
