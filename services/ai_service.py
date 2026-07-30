@@ -1,136 +1,173 @@
-from config import get_deepseek_key
-from db import update_news_by_id, get_news_by_short_name, get_news_by_id
-from datetime import datetime, timezone, timedelta
-from openai import OpenAI
+"""Optional AI summaries via DeepSeek.
 
+Entirely optional: without a DSEEK key every endpoint here reports that
+summaries are unavailable, and the rest of the app is unaffected. Summaries are
+also the only part of Stocky that costs money, so they are cached hard and
+generated on request rather than for every article on a schedule.
+"""
+from __future__ import annotations
 
-client = OpenAI(
-    api_key=get_deepseek_key(),
-    base_url="https://api.deepseek.com",
+import threading
+
+import db
+import settings
+from normalize import days_ago_iso, now_utc, parse_datetime
+
+_client = None
+_client_lock = threading.Lock()
+
+ARTICLE_PROMPT = (
+    "You are a concise financial news analyst. Given a news article's title, "
+    "description and URL, write exactly two short paragraphs covering the key "
+    "facts and what they mean for the stock. State only what the article "
+    "supports. No disclaimers, no investment advice."
+)
+
+DIGEST_PROMPT = (
+    "You are a concise financial news analyst. Given a list of recent "
+    "headlines for one stock, write four short paragraphs: the dominant "
+    "themes, the notable positives, the notable risks, and the overall tone. "
+    "Refer to specific headlines. No disclaimers, no investment advice."
 )
 
 
-SUMMARY_SYSTEM_PROMPT = """You are a concise financial news analyst. 
-When given a news article title, description, and URL, provide a clear and objective summary in exactly 2 paragraphs.
-Focus on the key facts, market implications, and what it means for the stock. 
-Do not include any disclaimers or investment advice."""
+def available() -> bool:
+    return settings.ai_enabled()
 
 
-def summarise_article(
-        news_id: int,
-        short_name: str,
-        url: str,
-        title: str,
-        description: str,
-    ) -> dict | None:
+def _get_client():
+    global _client
+    if _client is not None:
+        return _client
+    with _client_lock:
+        if _client is None:
+            from openai import OpenAI
+            _client = OpenAI(
+                api_key=settings.DEEPSEEK_KEY,
+                base_url=settings.DEEPSEEK_BASE_URL,
+                timeout=45.0,
+            )
+    return _client
 
-    """
-    Generate an AI summary for a single news article.
-    Updates the news row in the db with the summary.
-    Returns summary text and token usage, or None if it fails.
-    """
-    if get_news_by_id(news_id)["AI_summary"] is not None:
-        print(f"[summarise_article] AI_summary already exists for news id {news_id}")
-        return None
-    if not title and not description:
-        print(f"[summarise_article] No title or description provided for news_id {news_id}")
-        return None
-    elif not url:
-        print(f"[summarise_article] No URL provided for news_id {news_id}")
-        return None
-    
-    user_prompt = f"""
-    Stock: {short_name}
-    Title: {title}
-    Description: {description or 'No description available'}
-    url: {url}
-    Please summarise this news article in 2 paragraphs."""
 
+def _complete(system: str, user: str, max_tokens: int) -> dict | None:
     try:
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model="deepseek-chat",
             messages=[
-                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-                {"role": "user",   "content": user_prompt}
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
             ],
-            max_tokens=300,  # roughly 2 paragraphs
+            max_tokens=max_tokens,
         )
+    except Exception as exc:
+        print(f"[ai] request failed: {type(exc).__name__}: {exc}")
+        return None
 
-        summary = response.choices[0].message.content.strip()
-        tokens_in = response.usage.prompt_tokens
-        tokens_out = response.usage.completion_tokens
+    choice = (response.choices or [None])[0]
+    text = (choice.message.content or "").strip() if choice else ""
+    if not text:
+        return None
 
-        print(f"[summarise_article] {short_name} | news_id {news_id} | tokens in: {tokens_in} out: {tokens_out}")
+    usage = response.usage
+    return {
+        "text": text,
+        "tokens_in": getattr(usage, "prompt_tokens", 0) or 0,
+        "tokens_out": getattr(usage, "completion_tokens", 0) or 0,
+    }
 
+
+# ── Single article ───────────────────────────────────────────────────────
+
+def summarise_article(news_id: int) -> dict | None:
+    """Summarise one article, caching the result on its row."""
+    if not available():
+        return None
+
+    article = db.news.get_news_by_id(news_id)
+    if not article:
+        return None
+    if article.get("ai_summary"):
+        return {"id": news_id, "ai_summary": article["ai_summary"], "cached": True}
+
+    if not (article.get("title") or article.get("description")):
+        return None
+
+    user = (
+        f"Stock: {article['short_name']}\n"
+        f"Title: {article['title']}\n"
+        f"Description: {article.get('description') or 'None provided'}\n"
+        f"URL: {article['url']}\n\n"
+        "Summarise this article in two paragraphs."
+    )
+    result = _complete(ARTICLE_PROMPT, user, max_tokens=320)
+    if not result:
+        return None
+
+    db.news.update_news(news_id, ai_summary=result["text"])
+    return {"id": news_id, "ai_summary": result["text"], "cached": False}
+
+
+# ── Whole-stock digest ───────────────────────────────────────────────────
+
+def summarise_stock(short_name: str, days: int = 7, max_age_hours: int = 24) -> dict | None:
+    """Digest of a stock's recent coverage, cached for a day.
+
+    Re-uses the cached digest unless it has expired *or* new articles have
+    arrived since it was written — a summary that predates today's news is
+    exactly the summary you don't want.
+    """
+    if not available():
+        return None
+
+    cached = db.summaries.latest_summary(short_name)
+    if cached and _still_fresh(cached, short_name, max_age_hours):
         return {
-            "news_id":    news_id,
-            "summary":    summary,
-            "tokens_in":  tokens_in,
-            "tokens_out": tokens_out,
+            "symbol": short_name,
+            "ai_summary": cached["ai_summary"],
+            "article_count": cached.get("article_count") or 0,
+            "cached": True,
         }
 
-    except Exception as e:
-        print(f"[summarise_article] Error for news_id {news_id}: {e}")
+    articles = db.news.get_news([short_name], since=days_ago_iso(days), limit=60)
+    if not articles:
         return None
 
-
-def summarise_recent_news(short_name: str, days: int = 3) -> dict | None:
-    """
-    Generate a combined AI summary of all news for a stock over the last N days.
-    This is a premium feature — check tier before calling.
-    Returns the summary and total token usage.
-    """
-    
-    articles = get_news_by_short_name(short_name, limit=50)
-
-    # filter to last N days
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    recent = [
-        a for a in articles
-        if a["publish_time"] and a["publish_time"] >= cutoff.isoformat()
-    ]
-
-    if not recent:
-        print(f"[summarise_recent_news] No recent articles found for {short_name}")
+    digest = "\n".join(
+        f"- [{a['publish_time'][:10]}] {a['title']}"
+        + (f" — {a['description'][:180]}" if a.get("description") else "")
+        for a in articles
+    )
+    user = (
+        f"Stock: {short_name}\nHeadlines from the last {days} days "
+        f"({len(articles)} articles):\n\n{digest}"
+    )
+    result = _complete(DIGEST_PROMPT, user, max_tokens=520)
+    if not result:
         return None
 
-    # build a digest of all recent headlines and descriptions
-    digest = "\n\n".join([
-        f"- {a['title']}: {a['description'] or 'No description'}"
-        for a in recent
-    ])
+    db.summaries.insert_summary(
+        short_name,
+        result["text"],
+        tokens_total=result["tokens_in"] + result["tokens_out"],
+        days=days,
+        article_count=len(articles),
+    )
+    return {
+        "symbol": short_name,
+        "ai_summary": result["text"],
+        "article_count": len(articles),
+        "cached": False,
+    }
 
-    user_prompt = f"""Stock: {short_name}
-    Here are the last {days} days of news articles:
 
-    {digest}
+def _still_fresh(cached: dict, short_name: str, max_age_hours: int) -> bool:
+    created = parse_datetime(cached.get("created_at"))
+    if not created:
+        return False
+    if (now_utc() - created).total_seconds() > max_age_hours * 3600:
+        return False
 
-    Please provide a 4 paragraph summary of the overall news sentiment and key themes for {short_name} over this period."""
-
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-                {"role": "user",   "content": user_prompt}
-            ],
-            max_tokens=400,
-        )
-
-        summary = response.choices[0].message.content.strip()
-        tokens_in = response.usage.prompt_tokens
-        tokens_out = response.usage.completion_tokens
-
-        print(f"[summarise_recent_news] {short_name} | {len(recent)} articles | tokens in: {tokens_in} out: {tokens_out}")
-
-        return {
-            "short_name":     short_name,
-            "articles_used":  len(recent),
-            "ai_summary":     summary,
-            "tokens_in":      tokens_in,
-            "tokens_out":     tokens_out,
-        }
-
-    except Exception as e:
-        print(f"[summarise_recent_news] Error for {short_name}: {e}")
-        return None
+    # Any article newer than the summary makes it stale.
+    newer = db.news.get_news([short_name], since=cached["created_at"], limit=1)
+    return not newer

@@ -1,245 +1,210 @@
-from .connection import get_connection
-from typing import Optional
-from rapidfuzz import fuzz
+"""News storage.
+
+Uniqueness is enforced by the (short_name, url_hash) index rather than by a
+fuzzy title scan at insert time. The previous version compared every incoming
+title against every title from the last 7 days *across all stocks* at 75%
+similarity, so "Stock Market Today: Nasdaq Rises" for one ticker permanently
+blocked the near-identical headline for every other ticker. Story-level
+deduplication now happens per stock in services/dedup.py before we get here.
+"""
+from __future__ import annotations
+
+from normalize import days_ago_iso
+
+from .connection import get_connection, one, rows
+
+_ALLOWED_UPDATE_FIELDS = frozenset({"sentiment", "ai_summary", "image", "description", "url", "source", "source_domain"})
 
 
-# ------------ INSERT --------------
-def insert_news(
-    short_name: str,
-    source: str,
-    source_type: str,
-    publish_time: str,
-    url: str,
-    title: str,
-    source_url: str = None,
-    source_country: str = None,
-    lang: str = None,
-    image: str = None,
-    description: str = None,
-    sentiment: float = None,
-    ai_summary: str = None,
-) -> int | None:
-    """Insert a news item. Returns the new row's id, or None if title already exists."""
-    with get_connection() as conn:
-        existing = conn.execute("SELECT id FROM news WHERE title = ?", (title,)).fetchone()
+# ── Write ────────────────────────────────────────────────────────────────
 
-        if existing:
-            #print(f"[insert_news] Exact duplicate detected, skipping: {title}")
-            return None
-        
-        # fuzzy duplicate check
-        if is_duplicate_news(title):
-            #print(f"[insert_news] Fuzzy duplicate detected, skipping: {title}")
-            return None
+def insert_news_many(articles: list[dict]) -> list[int]:
+    """Insert prepared articles, skipping ones already stored for that stock.
 
-        cursor = conn.execute("""
-            INSERT INTO news (
-                short_name, source, source_url, source_country, source_type,
-                lang, publish_time, url, image, title, description, sentiment, ai_summary
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (short_name, source, source_url, source_country, source_type,
-              lang, publish_time, url, image, title, description, sentiment, ai_summary))
-        conn.commit()
-        return cursor.lastrowid
-
-
-# ----------- GET --------------
-def get_all_news(limit: int = 100) -> list[dict]:
-    """Fetch all news, most recent first."""
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM news ORDER BY publish_time DESC LIMIT ?", (limit,)
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-
-def get_news_by_short_name(short_name: str, limit: int = 50, since: str = None) -> list[dict]:
-    with get_connection() as conn:
-        if since:
-            rows = conn.execute("""
-                SELECT * FROM news 
-                WHERE short_name = ? AND publish_time > ?
-                ORDER BY publish_time DESC LIMIT ?
-            """, (short_name, since, limit)).fetchall()
-        else:
-            rows = conn.execute("""
-                SELECT * FROM news 
-                WHERE short_name = ? 
-                ORDER BY publish_time DESC LIMIT ?
-            """, (short_name, limit)).fetchall()
-
-        return [dict(row) for row in rows]
-
-
-def get_news_by_title(title: str) -> Optional[dict]:
-    """Fetch a single news item by exact title."""
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM news WHERE title = ?", (title,)
-        ).fetchone()
-        return dict(row) if row else None
-    
-
-def get_title_and_descriptions_from_ids(ids:list[int]) -> Optional[list[dict]]:
-    placeholders = ",".join("?" * len(ids))
-    with get_connection() as conn:
-        rows = conn.execute(
-            f"SELECT id, title, description FROM news WHERE id IN ({placeholders})",
-            ids
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-
-def get_news_by_recency(limit: int = 10) -> list[dict]:
-    """Fetch the most recently published news items."""
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM news ORDER BY publish_time DESC LIMIT ?", (limit,)
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-
-def get_news_by_source_type(source_type: str, limit: int = 50) -> list[dict]:
-    """Fetch news filtered by source type e.g. 'api' or 'rss'."""
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM news WHERE source_type = ? ORDER BY publish_time DESC LIMIT ?",
-            (source_type, limit)
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-
-def get_news_by_sentiment(ascending: bool = False, limit: int = 50) -> list[dict]:
+    Each article must carry: short_name, title, title_key, url, url_hash,
+    source, source_domain, source_type, publish_time. Returns the new row ids.
     """
-    Fetch news ordered by sentiment score.
-    ascending=False → most positive first (default)
-    ascending=True  → most negative first
-    """
-    order = "ASC" if ascending else "DESC"
+    if not articles:
+        return []
+
+    inserted: list[int] = []
     with get_connection() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM news WHERE sentiment IS NOT NULL ORDER BY sentiment {order} LIMIT ?",
-            (limit,)
-        ).fetchall()
-        return [dict(row) for row in rows]
-    
+        for a in articles:
+            cur = conn.execute("""
+                INSERT OR IGNORE INTO news (
+                    short_name, source, source_url, source_domain, source_country,
+                    source_type, lang, publish_time, url, url_hash, image,
+                    title, title_key, description, sentiment, relevance
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                a["short_name"], a["source"], a.get("source_url"), a.get("source_domain"),
+                a.get("source_country"), a["source_type"], a.get("lang", "en"),
+                a["publish_time"], a["url"], a["url_hash"], a.get("image"),
+                a["title"], a.get("title_key", ""), a.get("description"),
+                a.get("sentiment"), a.get("relevance", "direct"),
+            ))
+            if cur.rowcount:
+                inserted.append(cur.lastrowid)
+    return inserted
 
-def get_news_by_id(id: int) -> Optional[dict]:
-    """Fetch a single news item by ID."""
+
+def set_sentiment_many(scores: dict[int, float]) -> int:
+    if not scores:
+        return 0
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM news WHERE id = ?", (id,)
-        ).fetchone()
-        return dict(row) if row else None
-
-    
-# ----------- QUERY --------------
-def is_duplicate_news(title: str, threshold: int = 75) -> bool:
-    """
-    Check if a similar article already exists in the db.
-    Returns True if a title with similarity above threshold is found.
-    """
-    with get_connection() as conn:
-        # only check recent articles to keep it fast
-        rows = conn.execute("""
-            SELECT title FROM news 
-            WHERE created_at >= datetime('now', '-7 days')
-        """).fetchall()
-
-        for row in rows:
-            similarity = fuzz.ratio(title.lower(), row["title"].lower())
-            if similarity >= threshold:
-                return True
-
-    return False
-
-
-# ----------- UPDATE --------------
-def update_news_by_id(news_id: int, **fields) -> bool:
-    """
-    Update any fields on a news item by id.
-
-    Usage:
-        update_news_by_id(1, sentiment=0.8, ai_summary="...")
-    """
-    if not fields:
-        return False
-
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [news_id]
-
-    with get_connection() as conn:
-        cursor = conn.execute(
-            f"UPDATE news SET {set_clause} WHERE id = ?", values
-        )
-        conn.commit()
-        return cursor.rowcount > 0
-
-
-def update_news_by_title(title: str, **fields) -> bool:
-    """
-    Update any fields on a news item by title.
-
-    Usage:
-        update_news_by_title("Bitcoin hits 100k", sentiment=0.9, ai_summary="...")
-    """
-    if not fields:
-        return False
-
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [title]
-
-    with get_connection() as conn:
-        cursor = conn.execute(
-            f"UPDATE news SET {set_clause} WHERE title = ?", values
-        )
-        conn.commit()
-        return cursor.rowcount > 0
-    
-
-def bulk_update_sentiment_by_id(article_scores: dict) -> int:
-    """
-    Bulk update the sentiment of news articles by id.
-    Returns the number of rows updated.
-    """
-    updates = [(score, id) for id, score in article_scores.items()]
-    
-    with get_connection() as conn:
-        cursor = conn.executemany(
+        cur = conn.executemany(
             "UPDATE news SET sentiment = ? WHERE id = ?",
-            updates
+            [(score, news_id) for news_id, score in scores.items()],
         )
-        conn.commit()
-        return cursor.rowcount
+        return cur.rowcount
 
 
-def update_ai_summary_by_short_name(short_name: str, ai_summary: str) -> int:
-    """
-    Bulk update AI summary for all news items belonging to a symbol.
-    Returns the number of rows updated.
-    """
+def update_news(news_id: int, **fields) -> bool:
+    fields = {k: v for k, v in fields.items() if k in _ALLOWED_UPDATE_FIELDS}
+    if not fields:
+        return False
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
     with get_connection() as conn:
-        cursor = conn.execute(
-            "UPDATE news SET ai_summary = ? WHERE short_name = ?", (ai_summary, short_name)
+        cur = conn.execute(
+            f"UPDATE news SET {set_clause} WHERE id = ?", [*fields.values(), news_id]
         )
-        conn.commit()
-        return cursor.rowcount
+        return cur.rowcount > 0
 
 
-
-# ----------- DELETE --------------
-def delete_news_older_than(cutoff_date: str) -> int:
-    """
-    Delete all news items published before the cutoff date.
-    Returns the number of rows deleted.
-
-    Usage:
-        delete_news_older_than("2024-01-01T00:00:00Z")
-    """
+def set_images(images: dict[int, str]) -> int:
+    if not images:
+        return 0
     with get_connection() as conn:
-        cursor = conn.execute(
-            "DELETE FROM news WHERE publish_time < ?", (cutoff_date,)
+        cur = conn.executemany(
+            "UPDATE news SET image = ? WHERE id = ? AND image IS NULL",
+            [(url, news_id) for news_id, url in images.items()],
         )
-        conn.commit()
-        return cursor.rowcount
+        return cur.rowcount
+
+
+def delete_older_than(cutoff_iso: str) -> int:
+    with get_connection() as conn:
+        return conn.execute("DELETE FROM news WHERE publish_time < ?", (cutoff_iso,)).rowcount
+
+
+# ── Read ─────────────────────────────────────────────────────────────────
+
+def get_news_by_id(news_id: int) -> dict | None:
+    with get_connection() as conn:
+        return one(conn.execute("SELECT * FROM news WHERE id = ?", (news_id,)))
+
+
+def get_news(
+    short_names: list[str] | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    sentiment: str | None = None,
+    relevance: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    """Feed query. `sentiment` is one of positive/negative/neutral.
+
+    `short_names=None` means "every stock"; an *empty list* means "no stocks"
+    and returns nothing. Treating the two the same would turn a request for an
+    empty watchlist into a dump of the entire table.
+    """
+    if short_names is not None and not short_names:
+        return []
+
+    where, params = ["1=1"], []
+
+    if short_names:
+        where.append(f"short_name IN ({','.join('?' * len(short_names))})")
+        params += short_names
+    if relevance:
+        where.append("relevance = ?")
+        params.append(relevance)
+    if since:
+        where.append("publish_time >= ?")
+        params.append(since)
+    if until:
+        where.append("publish_time <= ?")
+        params.append(until)
+    if sentiment == "positive":
+        where.append("sentiment > 0.2")
+    elif sentiment == "negative":
+        where.append("sentiment < -0.2")
+    elif sentiment == "neutral":
+        where.append("(sentiment IS NULL OR sentiment BETWEEN -0.2 AND 0.2)")
+
+    params.append(limit)
+    with get_connection() as conn:
+        return rows(conn.execute(
+            f"SELECT * FROM news WHERE {' AND '.join(where)} "
+            f"ORDER BY publish_time DESC, id DESC LIMIT ?",
+            params,
+        ))
+
+
+def get_recent_fingerprints(short_name: str, days: int = 7) -> list[dict]:
+    """url_hash / title / title_key of what we already hold for this stock, so
+    incoming articles can be deduped against storage as well as each other."""
+    with get_connection() as conn:
+        return rows(conn.execute("""
+            SELECT id, url_hash, title, title_key, publish_time, source_domain,
+                   (description IS NOT NULL) AS has_description,
+                   (image IS NOT NULL) AS has_image
+            FROM news
+            WHERE short_name = ? AND publish_time >= ?
+        """, (short_name, days_ago_iso(days))))
+
+
+def get_unscored(limit: int = 500) -> list[dict]:
+    with get_connection() as conn:
+        return rows(conn.execute("""
+            SELECT id, title, description FROM news
+            WHERE sentiment IS NULL
+            ORDER BY publish_time DESC LIMIT ?
+        """, (limit,)))
+
+
+def get_missing_images(short_names: list[str], limit: int = 12) -> list[dict]:
+    """Newest image-less articles worth an og:image lookup. Google redirect
+    links are excluded: resolving those costs a request and rarely yields one."""
+    if not short_names:
+        return []
+    marks = ",".join("?" * len(short_names))
+    with get_connection() as conn:
+        return rows(conn.execute(f"""
+            SELECT id, url FROM news
+            WHERE short_name IN ({marks})
+              AND image IS NULL
+              AND source_domain NOT IN ('news.google.com', '')
+              AND source_domain IS NOT NULL
+            ORDER BY publish_time DESC LIMIT ?
+        """, [*short_names, limit]))
+
+
+def count_by_stock(since: str, short_names: list[str] | None = None) -> list[dict]:
+    where, params = ["publish_time >= ?"], [since]
+    if short_names:
+        where.append(f"short_name IN ({','.join('?' * len(short_names))})")
+        params += short_names
+    with get_connection() as conn:
+        return rows(conn.execute(f"""
+            SELECT short_name,
+                   COUNT(*)        AS article_count,
+                   AVG(sentiment)  AS avg_sentiment
+            FROM news
+            WHERE {' AND '.join(where)}
+            GROUP BY short_name
+            ORDER BY article_count DESC
+        """, params))
+
+
+def source_breakdown(short_names: list[str], since: str) -> list[dict]:
+    if not short_names:
+        return []
+    marks = ",".join("?" * len(short_names))
+    with get_connection() as conn:
+        return rows(conn.execute(f"""
+            SELECT COALESCE(source_domain, source) AS source, COUNT(*) AS article_count
+            FROM news
+            WHERE short_name IN ({marks}) AND publish_time >= ?
+            GROUP BY 1 ORDER BY article_count DESC
+        """, [*short_names, since]))

@@ -1,32 +1,58 @@
+"""Background scheduler. Run alongside the API: `python scheduler.py`.
+
+Deliberately separate from the API process so a long scrape can never block a
+request, and so restarting the API doesn't interrupt a refresh.
+"""
+from __future__ import annotations
+
 from apscheduler.schedulers.blocking import BlockingScheduler
-from jobs import run_refresh_stocks, update_stock_prices, update_free_stocks
-from jobs import run_refresh_news
-from jobs import run_aggregate_sentiment
 
-scheduler = BlockingScheduler()
+import db
+import jobs
+import settings
 
-# refresh stock list once p/w
-scheduler.add_job(run_refresh_stocks, "cron", day_of_week="mon", hour=0, minute=0)
+scheduler = BlockingScheduler(timezone="UTC")
 
-# update stock prices 15/m
-scheduler.add_job(update_stock_prices, "interval", minutes=60)
+# Prices hourly. Nothing here needs tick-by-tick data — a chart of the last day
+# and a price from within the hour is the stated requirement, and it keeps us
+# comfortably inside every source's tolerance.
+scheduler.add_job(
+    jobs.refresh_prices, "interval",
+    minutes=settings.PRICE_REFRESH_MINUTES, id="prices",
+    max_instances=1, coalesce=True,
+)
 
-# refresh news 1p/h
-scheduler.add_job(run_refresh_news, "interval", hours=1)
+scheduler.add_job(
+    jobs.refresh_news, "interval",
+    minutes=settings.NEWS_REFRESH_MINUTES, id="news",
+    max_instances=1, coalesce=True,
+)
 
-# aggregate 11pm 1p/d
-scheduler.add_job(run_aggregate_sentiment, "cron", hour=23, minute=0)
+# Rollups after the US close (21:30 UTC in summer), then housekeeping.
+scheduler.add_job(jobs.aggregate_sentiment, "cron", hour=22, minute=0, id="sentiment")
+scheduler.add_job(jobs.prune, "cron", hour=3, minute=30, id="prune")
 
-if __name__ == "__main__":
-    print("Starting scheduler...")
-    
-    run_refresh_stocks()
-    update_stock_prices()
-    run_refresh_news()
-    run_aggregate_sentiment()
+# The instrument catalogue barely changes, and needs Trading212 keys at all.
+scheduler.add_job(jobs.refresh_catalogue, "cron", day_of_week="mon", hour=4, id="catalogue")
+
+
+def main() -> None:
+    db.create_tables()
+    print(f"[scheduler] prices every {settings.PRICE_REFRESH_MINUTES}m, "
+          f"news every {settings.NEWS_REFRESH_MINUTES}m")
+
+    # Bring everything current on start rather than idling until the first tick.
+    jobs.catch_up()
+    jobs.refresh_prices()
+    jobs.refresh_news()
+    jobs.aggregate_sentiment()
 
     try:
         scheduler.start()
-    except KeyboardInterrupt:
-        print("Scheduler stopped.")
-        scheduler.shutdown()
+    except (KeyboardInterrupt, SystemExit):
+        print("[scheduler] stopped")
+        scheduler.shutdown(wait=False)
+
+
+if __name__ == "__main__":
+    main()

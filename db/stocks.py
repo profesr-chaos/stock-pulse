@@ -1,189 +1,161 @@
-from .connection import get_connection
-from typing import Optional
+"""The instrument catalogue and its latest quote."""
+from __future__ import annotations
+
+from normalize import now_iso
+
+from .connection import get_connection, one, rows
+
+_ALLOWED_UPDATE_FIELDS = frozenset({
+    "name", "type", "currency_code", "industry",
+    "yahoo_symbol", "exchange", "quote_currency", "resolved_at",
+    "price", "price_change", "price_change_percent", "price_updated_at",
+})
 
 
-# -------------- INSERT ----------------
-def insert_stock(
-    shortName: str,
-    name: str,
-    type: str,
-    currencyCode: float,
-    price: float = None,
-    priceChange: float = None,
-    priceChangePercent: float = None,
-    inFreeTier: bool = False,
-    inUse: bool = False,
-) -> int | None:
-    
-    """Insert a new stock. Returns the new row's id, or None if short_name already exists."""
+# ── Read ─────────────────────────────────────────────────────────────────
+
+def get_stock(short_name: str) -> dict | None:
     with get_connection() as conn:
-        existing = conn.execute("SELECT id FROM stocks WHERE short_name = ?", (shortName,)).fetchone()
-        if existing:
-            return None
+        return one(conn.execute("SELECT * FROM stocks WHERE short_name = ?", (short_name,)))
 
-        cursor = conn.execute("""
-            INSERT INTO stocks (short_name, name, type, currency_code, price, price_change, price_change_percent, in_free_tier, in_use)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (shortName, name, type, currencyCode, price, priceChange, priceChangePercent, int(inFreeTier), int(inUse)))
-        conn.commit()
-        return cursor.lastrowid
-    
 
-def bulk_insert_stocks(stocks: list[dict]) -> int:
-    """Insert many stocks in a single transaction. Returns count inserted."""
+def get_stocks(short_names: list[str]) -> list[dict]:
+    if not short_names:
+        return []
+    marks = ",".join("?" * len(short_names))
     with get_connection() as conn:
-        count = 0
-        for stock in stocks:
-            existing = conn.execute(
-                "SELECT id FROM stocks WHERE short_name = ?", (stock["shortName"],)
-            ).fetchone()
-            if not existing:
-                conn.execute("""
-                    INSERT INTO stocks (short_name, name, type, currency_code)
-                    VALUES (?, ?, ?, ?)
-                """, (stock["shortName"], stock["name"], stock["type"], stock["currencyCode"]))
-                count += 1
-        conn.commit()  # one single commit at the end
-    return count
-    
+        found = rows(conn.execute(f"SELECT * FROM stocks WHERE short_name IN ({marks})", short_names))
+    # preserve caller order
+    by_name = {s["short_name"]: s for s in found}
+    return [by_name[n] for n in short_names if n in by_name]
 
-# -------------- GET ----------------
-def get_all_stocks():
+
+def search_stocks(query: str, limit: int = 25) -> list[dict]:
+    """Symbol-first ranking: exact, then symbol prefix, then name prefix, then
+    name substring. A LIKE scan over ~15k rows is well under a millisecond, so
+    no FTS table to keep in sync.
+
+    Ties break towards the primary listing and away from derivatives: searching
+    "tesla" should surface TSLA, not the German TL0 line or a 3x short ETP.
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    prefix, contains = f"{q}%", f"%{q}%"
     with get_connection() as conn:
-        rows = conn.execute("SELECT * FROM stocks").fetchall()
-        return [dict(row) for row in rows]
-    
-
-def get_stock_by_short_name(short_name: str) -> Optional[dict]:
-    """Fetch a single stock by shortName."""
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM stocks WHERE short_name = ?", (short_name,)).fetchone()
-        return dict(row) if row else None
-    
-
-def is_free(short_name: str) -> True | False:
-    with get_connection() as conn:
-        tier = conn.execute("SELECT in_free_tier FROM stocks WHERE short_name = ?", (short_name,)).fetchone()
-        return bool(dict(tier).get("in_free_tier")) if tier else None
-    
-    
-def get_stocks_by_filter(
-    type: str = None,
-    industry: str = None,
-    inFreeTier: bool = None,
-    inUse: bool = None,
-) -> list[dict]:
-    """Fetch stocks with optional filters."""
-    query = "SELECT * FROM stocks WHERE 1=1"
-    params = []
-
-    if type is not None:
-        query += " AND type = ?"
-        params.append(type)
-    if industry is not None:
-        query += " AND industry = ?"
-        params.append(industry)
-    if inFreeTier is not None:
-        query += " AND in_free_tier = ?"
-        params.append(int(inFreeTier))
-    if inUse is not None:
-        query += " AND in_use = ?"
-        params.append(int(inUse))
-
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
-    
-
-def get_stocks_by_search(query: str, limit: int = 25) -> list[dict]:
-    pattern = f"{query}%"
-    with get_connection() as conn:
-        rows = conn.execute("""
+        return rows(conn.execute("""
             SELECT * FROM stocks
             WHERE short_name LIKE ? OR name LIKE ?
             ORDER BY
-                CASE WHEN short_name LIKE ? THEN 0 ELSE 1 END,
-                short_name ASC
+                CASE
+                    WHEN short_name = ?    THEN 0
+                    WHEN short_name LIKE ? THEN 1
+                    WHEN name LIKE ?       THEN 2
+                    ELSE 3
+                END,
+                CASE WHEN type = 'STOCK' THEN 0 ELSE 1 END,
+                -- already resolved to a US line? that's the primary listing
+                CASE WHEN exchange IN ('NMS','NYQ','NGM','NCM','ASE','PCX','BTS') THEN 0 ELSE 1 END,
+                -- secondary European lines usually carry digits (TL0, NVD2, 6RJ0)
+                CASE WHEN short_name GLOB '*[0-9]*' THEN 1 ELSE 0 END,
+                LENGTH(name),
+                LENGTH(short_name) DESC,
+                short_name
             LIMIT ?
-        """, (pattern, pattern, pattern, limit)).fetchall()
-        return [dict(row) for row in rows]
+        """, (prefix, contains, q.upper(), prefix, prefix, limit)))
 
 
-def get_stocks_table_size() -> int:
-    """Return the number of rows in the stocks table."""
+def count_stocks() -> int:
     with get_connection() as conn:
-        row = conn.execute("SELECT COUNT(*) AS count FROM stocks").fetchone()
-        return row["count"] if row else 0
-    
+        return conn.execute("SELECT COUNT(*) AS c FROM stocks").fetchone()["c"]
 
-def get_quote_by_symbol(symbol: str) -> Optional[dict]:
-    """Fetch a single stock quote by symbol (short_name)."""
+
+def get_unresolved(short_names: list[str]) -> list[dict]:
+    """Watchlist entries whose best listing has never been resolved."""
+    if not short_names:
+        return []
+    marks = ",".join("?" * len(short_names))
     with get_connection() as conn:
-        row = conn.execute("""
-            SELECT short_name, price, price_change, price_change_percent, currency_code
-            FROM stocks
-            WHERE short_name = ?
-        """, (symbol,)).fetchone()
-        return dict(row) if row else None
-    
+        return rows(conn.execute(
+            f"SELECT * FROM stocks WHERE short_name IN ({marks}) AND yahoo_symbol IS NULL",
+            short_names,
+        ))
 
-# -------------- UPDATE ----------------
+
+# ── Write ────────────────────────────────────────────────────────────────
+
+def bulk_upsert_stocks(stocks: list[dict]) -> int:
+    """Insert new instruments, refresh names on existing ones. Returns inserts."""
+    if not stocks:
+        return 0
+    payload = [
+        (s["shortName"], s["name"], s["type"], s.get("currencyCode"))
+        for s in stocks
+        if s.get("shortName") and s.get("name") and s.get("type")
+    ]
+    with get_connection() as conn:
+        before = conn.execute("SELECT COUNT(*) AS c FROM stocks").fetchone()["c"]
+        conn.executemany("""
+            INSERT INTO stocks (short_name, name, type, currency_code)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(short_name) DO UPDATE SET
+                name = excluded.name,
+                type = excluded.type,
+                currency_code = COALESCE(excluded.currency_code, stocks.currency_code)
+        """, payload)
+        after = conn.execute("SELECT COUNT(*) AS c FROM stocks").fetchone()["c"]
+    return after - before
+
+
+def upsert_stock(short_name: str, name: str, type: str = "STOCK", currency_code: str | None = None) -> None:
+    """Used when a symbol is followed that isn't in the catalogue yet."""
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO stocks (short_name, name, type, currency_code)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(short_name) DO UPDATE SET name = excluded.name
+        """, (short_name, name, type, currency_code))
+
+
 def update_stock(short_name: str, **fields) -> bool:
-    """
-    Update any fields on an stock by shortName.
-    
-    Usage:
-        update_stock("BTC", price=99.9, inUse=True)
-    """
+    """Update whitelisted columns. The whitelist keeps caller-supplied keys out
+    of the SQL string."""
+    fields = {k: v for k, v in fields.items() if k in _ALLOWED_UPDATE_FIELDS}
     if not fields:
         return False
-
-    for key in ("in_free_tier", "in_use"):
-        if key in fields and isinstance(fields[key], bool):
-            fields[key] = int(fields[key])
-
     set_clause = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values()) + [short_name]
-
     with get_connection() as conn:
-        cursor = conn.execute(
-            f"UPDATE stocks SET {set_clause} WHERE short_name = ?", values
+        cur = conn.execute(
+            f"UPDATE stocks SET {set_clause} WHERE short_name = ?",
+            [*fields.values(), short_name],
         )
-        conn.commit()
-        return cursor.rowcount > 0
-    
+        return cur.rowcount > 0
 
-def reset_free_tier() -> None:
-    """Set in_free_tier = False for all stocks."""
+
+def set_resolution(short_name: str, yahoo_symbol: str, exchange: str | None, quote_currency: str | None) -> None:
     with get_connection() as conn:
-        conn.execute("UPDATE stocks SET in_free_tier = 0")
-        conn.commit()
+        conn.execute("""
+            UPDATE stocks
+            SET yahoo_symbol = ?, exchange = ?, quote_currency = ?, resolved_at = ?
+            WHERE short_name = ?
+        """, (yahoo_symbol, exchange, quote_currency, now_iso(), short_name))
 
 
-def bulk_update_stock_prices(updates: list[dict]) -> int:
-    """
-    Update prices for many stocks in a single transaction.
-    updates = [{"short_name": "AAPL", "price": 257.46, "price_change": -2.83, "price_change_percent": -1.08}]
-    Returns number of rows updated.
-    """
+def bulk_set_quotes(quotes: list[dict]) -> int:
+    """quotes = [{"short_name", "price", "change", "change_percent", "currency"}]"""
+    if not quotes:
+        return 0
+    stamp = now_iso()
+    payload = [
+        (q["price"], q.get("change"), q.get("change_percent"),
+         q.get("currency"), stamp, q["short_name"])
+        for q in quotes
+    ]
     with get_connection() as conn:
-        count = 0
-        for u in updates:
-            cursor = conn.execute("""
-                    UPDATE stocks
-                    SET price = ?, price_change = ?, price_change_percent = ?
-                    WHERE short_name = ?
-                    """, (u["price"], u["price_change"], u["price_change_percent"], u["short_name"]))
-            count += cursor.rowcount
-        conn.commit()
-    return count
-
-
-# -------------- DELETE ----------------
-def delete_stock(short_name: str) -> bool:
-    """Delete an stock by shortName. Returns True if an stock was deleted."""
-    with get_connection() as conn:
-        cursor = conn.execute("DELETE FROM stocks WHERE short_name = ?", (short_name,))
-        conn.commit()
-        return cursor.rowcount > 0
-    
+        cur = conn.executemany("""
+            UPDATE stocks
+            SET price = ?, price_change = ?, price_change_percent = ?,
+                quote_currency = COALESCE(?, quote_currency), price_updated_at = ?
+            WHERE short_name = ?
+        """, payload)
+        return cur.rowcount

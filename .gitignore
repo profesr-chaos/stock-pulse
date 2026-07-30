@@ -47,3 +47,5 @@ desktop.ini
 .coverage
 htmlcov/
 test.py
+# Local database directory (WAL sidecar files live here too)
+data/

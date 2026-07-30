@@ -1,114 +1,124 @@
-# routes/stocks.py
-from fastapi import APIRouter, Query, Depends
-from pydantic import BaseModel
-from typing import List, Optional
-from db import (get_stocks_by_search, 
-                get_stock_by_short_name,
-                get_stocks_by_filter,
-                get_popular_stocks, 
-                get_quote_by_symbol,
-                is_free,
-                )
-from jobs import update_single_stock_price, get_or_fetch_quote
+"""Instrument search, quotes and price history."""
+from __future__ import annotations
 
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+
+import db
+import settings
+from normalize import now_utc, parse_datetime
+from services import prices
+
+from .schemas import (
+    PricePoint,
+    PriceSeries,
+    Stock,
+    StockList,
+    parse_symbols,
+    require_symbol,
+    to_stock,
+)
 
 router = APIRouter(prefix="/stocks", tags=["Stocks"])
 
 
-class StockResponse(BaseModel):
-    symbol: str
-    name: Optional[str] = None
-    currencyCode: Optional[str] = None
-    type: Optional[str] = None
-    industry: Optional[str] = None
-    price: Optional[float] = None
-    change: Optional[float] = None
-    changePercent: Optional[float] = None
-    inFreeTier: Optional[bool] = None
-    inUse: Optional[bool] = None
+@router.get("/search", response_model=StockList)
+def search(q: str = Query(..., min_length=1, max_length=64)):
+    return StockList(results=[to_stock(s) for s in db.stocks.search_stocks(q.strip())])
 
 
-class QuoteResponse(BaseModel):
-    symbol: str
-    price: Optional[float] = None
-    change: Optional[float] = None
-    changePercent: Optional[float] = None
-    currencyCode: Optional[str] = None
+@router.get("/popular", response_model=StockList)
+def popular(limit: int = Query(10, ge=1, le=50)):
+    """The watchlist first, topped up with the most-covered stocks.
+
+    With no notion of other users there is no "popular" to compute, so this is
+    "what you follow" plus whatever we have the most news on.
+    """
+    watched = db.watchlist.get_watchlist()
+    results = [to_stock(s) for s in watched]
+
+    if len(results) < limit:
+        seen = {s.symbol for s in results}
+        busiest = db.news.count_by_stock(since=_week_ago(), short_names=None)
+        fill = [row["short_name"] for row in busiest if row["short_name"] not in seen]
+        for stock in db.stocks.get_stocks(fill[: limit - len(results)]):
+            results.append(to_stock(stock))
+
+    return StockList(results=results[:limit])
 
 
-class StockListResponse(BaseModel):
-    results: List[StockResponse]
+def _week_ago() -> str:
+    from normalize import days_ago_iso
+    return days_ago_iso(7)
 
 
-class QuoteListResponse(BaseModel):
-    results: List[QuoteResponse]
+@router.get("/quotes", response_model=StockList)
+def quotes(background: BackgroundTasks, symbols: str = Query(..., alias="symbols")):
+    """Latest quotes, served from the DB.
+
+    A symbol with no price yet is fetched inline so the UI never shows blanks
+    for a stock that was just added; a merely stale one is served immediately
+    and refreshed in the background. Reads stay fast either way.
+    """
+    wanted = parse_symbols(symbols)
+    stored = {s["short_name"]: s for s in db.stocks.get_stocks(wanted)}
+
+    stale: list[str] = []
+    results: list[Stock] = []
+
+    for symbol in wanted:
+        row = stored.get(symbol)
+        if row is None:
+            results.append(Stock(symbol=symbol))
+            continue
+
+        if row.get("price") is None:
+            fetched = prices.refresh_stock(symbol)
+            if fetched:
+                row = db.stocks.get_stock(symbol) or row
+        elif _is_stale(row.get("price_updated_at")):
+            stale.append(symbol)
+
+        results.append(to_stock(row))
+
+    for symbol in stale:
+        background.add_task(prices.refresh_stock, symbol)
+
+    return StockList(results=results)
 
 
-def db_to_stock(item: dict) -> StockResponse:
-    return StockResponse(
-        symbol=item["short_name"],
-        name=item["name"],
-        currencyCode=item["currency_code"],
-        type=item["type"],
-        industry=item["industry"],
-        price=item["price"],
-        change=item["price_change"],
-        changePercent=item["price_change_percent"],
-        inFreeTier=bool(item["in_free_tier"]),
-        inUse=bool(item["in_use"])
+def _is_stale(updated_at: str | None) -> bool:
+    if not updated_at:
+        return True
+    when = parse_datetime(updated_at)
+    if not when:
+        return True
+    return (now_utc() - when).total_seconds() > settings.QUOTE_STALE_MINUTES * 60
+
+
+@router.get("/{symbol}", response_model=Stock)
+def detail(symbol: str):
+    row = db.stocks.get_stock(require_symbol(symbol))
+    if not row:
+        raise HTTPException(status_code=404, detail="Stock not found")
+    return to_stock(row)
+
+
+@router.get("/{symbol}/prices", response_model=PriceSeries)
+def price_history(symbol: str, days: int = Query(30, ge=1, le=365)):
+    """Daily closes plus intraday snapshots for days without a close yet."""
+    symbol = require_symbol(symbol)
+    row = db.stocks.get_stock(symbol)
+    if not row:
+        raise HTTPException(status_code=404, detail="Stock not found")
+
+    series = prices.get_series(symbol, days=days)
+    row = db.stocks.get_stock(symbol) or row      # get_series may have refreshed
+
+    return PriceSeries(
+        symbol=symbol,
+        currency=row.get("quote_currency") or row.get("currency_code"),
+        price=row.get("price"),
+        change=row.get("price_change"),
+        changePercent=row.get("price_change_percent"),
+        points=[PricePoint(ts=p["ts"], close=p["close"]) for p in series],
     )
-
-
-@router.get("/popular", response_model=StockListResponse)
-def get_popular_stocks_route():
-    free = get_stocks_by_filter(inFreeTier=True)
-    popular = get_popular_stocks()
-
-    # combine, with free stocks first, avoiding duplicates
-    free_symbols = {s["short_name"] for s in free}
-    combined = free + [s for s in popular if s["short_name"] not in free_symbols]
-
-    return StockListResponse(results=[db_to_stock(s) for s in combined])
-
-
-@router.get("/free", response_model=StockListResponse)
-def get_free_stocks():
-    raw = get_stocks_by_filter(inFreeTier=True)
-    return StockListResponse(results=[db_to_stock(s) for s in raw])
-
-
-@router.get("/is_free")
-def search_stocks(q: str = Query(..., min_length=1)):
-    free = is_free(q)
-    return {"is_free":f"{free}"}
-
-
-@router.get("/search", response_model=StockListResponse)
-def search_stocks(q: str = Query(..., min_length=1)):
-    raw = get_stocks_by_search(q.lower())
-    return StockListResponse(results=[db_to_stock(s) for s in raw])
-
-
-@router.get("/quotes", response_model=QuoteListResponse)
-def get_quotes(q: str = Query(...)):
-    symbols = [s.strip() for s in q.split(",")]
-    quotes = []
-
-    for sym in symbols:
-        item = get_or_fetch_quote(sym)
-        if item:
-            quotes.append(QuoteResponse(
-                symbol=item["short_name"],
-                price=item["price"],
-                change=item["price_change"],
-                changePercent=item["price_change_percent"],
-                currencyCode=item["currency_code"]
-            ))
-        else:
-            quotes.append(QuoteResponse(symbol=sym, price=None, change=None, changePercent=None, currencyCode=None))
-
-    return QuoteListResponse(results=quotes)
-
-
-
-
