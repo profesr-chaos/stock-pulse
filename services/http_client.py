@@ -89,13 +89,21 @@ _BASE_HEADERS = {
 
 # Per-host starting/ceiling request rates, requests per second. Yahoo's JSON
 # endpoints tolerate a lot; Google News throttles a scraped RSS search sooner.
+#
+# Where a host publishes a limit we honour it as a hard ceiling rather than
+# probing up into it: SEC's fair-access policy states 10 req/s, so the ceiling
+# here stays well under that.
 _HOST_RATES: dict[str, tuple[float, float]] = {
     "query1.finance.yahoo.com": (4.0, 12.0),
     "query2.finance.yahoo.com": (4.0, 12.0),
     "feeds.finance.yahoo.com": (3.0, 8.0),
     "news.google.com": (1.5, 5.0),
     "finviz.com": (1.0, 3.0),
-    "stooq.com": (2.0, 6.0),
+    "www.bing.com": (1.0, 4.0),
+    "api.nasdaq.com": (1.0, 4.0),
+    "www.nasdaq.com": (1.0, 3.0),
+    "www.sec.gov": (2.0, 8.0),
+    "quote.cnbc.com": (2.0, 6.0),
 }
 _DEFAULT_RATE = (1.5, 4.0)
 _MIN_RATE = 0.2

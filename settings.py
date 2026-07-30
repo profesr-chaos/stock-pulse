@@ -59,9 +59,14 @@ CORS_ORIGINS = [
 
 # ── Data freshness ───────────────────────────────────────────────────────
 BACKFILL_DAYS = _int("STOCKY_BACKFILL_DAYS", 30)      # history pulled for a new follow
+# Prices are refreshed on the fast cadence while any major market is in
+# session and on the slow one outside it. A closed market's price cannot move,
+# so polling it every few minutes would be load on someone else's servers in
+# exchange for an unchanged number.
+PRICE_REFRESH_OPEN_MINUTES = _int("STOCKY_PRICE_REFRESH_OPEN_MINUTES", 5)
 PRICE_REFRESH_MINUTES = _int("STOCKY_PRICE_REFRESH_MINUTES", 60)
 NEWS_REFRESH_MINUTES = _int("STOCKY_NEWS_REFRESH_MINUTES", 60)
-QUOTE_STALE_MINUTES = _int("STOCKY_QUOTE_STALE_MINUTES", 60)   # serve cached quote under this age
+QUOTE_STALE_MINUTES = _int("STOCKY_QUOTE_STALE_MINUTES", 15)   # serve cached quote under this age
 NEWS_RETENTION_DAYS = _int("STOCKY_NEWS_RETENTION_DAYS", 120)
 
 # ── Scraping ─────────────────────────────────────────────────────────────
@@ -76,6 +81,21 @@ IMAGE_FETCH_LIMIT = _int("STOCKY_IMAGE_FETCH_LIMIT", 12)       # per stock per r
 # "vader"   → finance-tuned VADER, no torch, instant (default)
 # "finbert" → ProsusAI/finbert, needs `--extras finbert`, much heavier
 SENTIMENT_BACKEND = os.getenv("STOCKY_SENTIMENT", "vader").strip().lower()
+
+# SEC's fair-access policy requires every caller to identify itself with a
+# contact address, and it is enforced, not advisory: a User-Agent carrying a
+# repo URL instead of an email gets a flat 403 while the same request with an
+# address in it returns 200. So EDGAR is opt-in — set STOCKY_SEC_CONTACT to an
+# email you actually read and the source switches on; leave it unset and it is
+# skipped. Scraping a regulator that asked to know who we are, without telling
+# it, is not a trade worth making for one extra source.
+# https://www.sec.gov/os/accessing-edgar-data
+SEC_CONTACT = (os.getenv("STOCKY_SEC_CONTACT") or "").strip() or None
+SEC_USER_AGENT = f"stocky/0.2 ({SEC_CONTACT})" if SEC_CONTACT else ""
+
+
+def sec_enabled() -> bool:
+    return bool(SEC_CONTACT)
 
 # ── Optional third-party keys ────────────────────────────────────────────
 DEEPSEEK_KEY = os.getenv("DSEEK") or None

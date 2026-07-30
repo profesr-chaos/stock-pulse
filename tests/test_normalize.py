@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+import normalize
 from normalize import (
     canonical_url,
     domain_of,
@@ -152,3 +153,36 @@ class TestValidSymbol:
     def test_anything_not_ticker_shaped_is_rejected(self, symbol):
         """These reach outbound scraper URLs, so the gate matters."""
         assert not valid_symbol(symbol)
+
+
+class TestMarketHours:
+    """The gate that decides whether a fast price refresh is worth making."""
+
+    def _at(self, iso):
+        from datetime import datetime
+        from normalize import UTC
+        return datetime.fromisoformat(iso).replace(tzinfo=UTC)
+
+    def test_weekends_are_closed(self):
+        # 2026-08-01 is a Saturday, 2026-08-02 a Sunday.
+        assert not normalize.markets_open(self._at("2026-08-01T15:00:00"))
+        assert not normalize.markets_open(self._at("2026-08-02T15:00:00"))
+
+    def test_us_session_is_open(self):
+        assert normalize.markets_open(self._at("2026-07-30T18:00:00"))
+
+    def test_london_morning_is_open_before_new_york_wakes(self):
+        assert normalize.markets_open(self._at("2026-07-30T09:00:00"))
+
+    def test_asian_session_is_open(self):
+        assert normalize.markets_open(self._at("2026-07-30T02:00:00"))
+
+    def test_the_overnight_gap_is_closed(self):
+        """After the US close and before Tokyo — nothing can move, so nothing
+        should be scraped."""
+        assert not normalize.markets_open(self._at("2026-07-30T22:00:00"))
+        assert not normalize.markets_open(self._at("2026-07-30T23:30:00"))
+
+    def test_boundaries_are_half_open(self):
+        assert normalize.markets_open(self._at("2026-07-30T13:30:00"))
+        assert not normalize.markets_open(self._at("2026-07-30T21:00:00"))

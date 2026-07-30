@@ -13,12 +13,12 @@ import settings
 
 scheduler = BlockingScheduler(timezone="UTC")
 
-# Prices hourly. Nothing here needs tick-by-tick data — a chart of the last day
-# and a price from within the hour is the stated requirement, and it keeps us
-# comfortably inside every source's tolerance.
+# Prices on the fast cadence. `jobs.refresh_prices` drops most of these ticks
+# back to the hourly interval once every market is shut, so this buys a price
+# that is minutes old during the session without scraping all night.
 scheduler.add_job(
     jobs.refresh_prices, "interval",
-    minutes=settings.PRICE_REFRESH_MINUTES, id="prices",
+    minutes=settings.PRICE_REFRESH_OPEN_MINUTES, id="prices",
     max_instances=1, coalesce=True,
 )
 
@@ -38,7 +38,8 @@ scheduler.add_job(jobs.refresh_catalogue, "cron", day_of_week="mon", hour=4, id=
 
 def main() -> None:
     db.create_tables()
-    print(f"[scheduler] prices every {settings.PRICE_REFRESH_MINUTES}m, "
+    print(f"[scheduler] prices every {settings.PRICE_REFRESH_OPEN_MINUTES}m while a market "
+          f"is open ({settings.PRICE_REFRESH_MINUTES}m otherwise), "
           f"news every {settings.NEWS_REFRESH_MINUTES}m")
 
     # Bring everything current on start rather than idling until the first tick.

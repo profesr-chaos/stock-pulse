@@ -140,19 +140,93 @@ class TestCnbcSymbolCandidates:
         assert prices._cnbc_candidates("XYZ.QQ") == ["XYZ.QQ"]
 
 
+# Real Nasdaq shape. The two blocks swap meaning with the session: once the
+# bell goes, `primaryData` becomes the extended-hours print and `secondaryData`
+# holds the regular close.
+NASDAQ_AFTER_HOURS = {"data": {
+    "symbol": "AAPL", "exchange": "NASDAQ-GS", "marketStatus": "After-Hours",
+    "primaryData": {
+        "lastSalePrice": "$314.39", "netChange": "-19.04",
+        "percentageChange": "-5.71%", "isRealTime": True,
+        "lastTradeTimestamp": "Jul 30, 2026 7:26 PM ET",
+    },
+    "secondaryData": {
+        "lastSalePrice": "$333.43", "netChange": "-4.76",
+        "percentageChange": "-1.41%", "isRealTime": False,
+        "lastTradeTimestamp": "Closed at Jul 30, 2026 4:00 PM ET",
+    },
+}}
+
+NASDAQ_OPEN = {"data": {
+    "symbol": "AAPL", "exchange": "NASDAQ-GS", "marketStatus": "Open",
+    "primaryData": {
+        "lastSalePrice": "$333.43", "netChange": "-4.76",
+        "percentageChange": "-1.41%", "isRealTime": True,
+        "lastTradeTimestamp": "Jul 30, 2026 2:10 PM ET",
+    },
+    "secondaryData": None,
+}}
+
+
+class TestNasdaqSource:
+    def test_regular_session_price_wins_after_the_bell(self, monkeypatch):
+        """Taking the live block blindly would store a 314.39 after-hours print
+        as the day's close and put a point on the chart that neither Yahoo nor
+        CNBC agrees with."""
+        monkeypatch.setattr(prices.scraper, "get_json", lambda *a, **kw: NASDAQ_AFTER_HOURS)
+        quote = prices.from_nasdaq("AAPL")
+        assert quote["price"] == 333.43
+        assert quote["change"] == -4.76
+        assert quote["change_percent"] == -1.41
+        assert quote["source"] == "nasdaq"
+
+    def test_live_price_is_used_while_the_market_is_open(self, monkeypatch):
+        monkeypatch.setattr(prices.scraper, "get_json", lambda *a, **kw: NASDAQ_OPEN)
+        assert prices.from_nasdaq("AAPL")["price"] == 333.43
+
+    def test_previous_close_is_derived_from_the_change(self, monkeypatch):
+        monkeypatch.setattr(prices.scraper, "get_json", lambda *a, **kw: NASDAQ_AFTER_HOURS)
+        assert prices.from_nasdaq("AAPL")["previous_close"] == 338.19
+
+    def test_foreign_listings_are_refused_without_a_request(self, monkeypatch):
+        """`SHEL.L` is the London ordinary; Nasdaq would answer with the New
+        York ADR, at a different price in a different currency."""
+        calls = []
+        monkeypatch.setattr(prices.scraper, "get_json",
+                            lambda *a, **kw: calls.append(a) or None)
+        assert prices.from_nasdaq("SHEL.L") is None
+        assert prices.from_nasdaq("^GSPC") is None
+        assert calls == []
+
+    def test_malformed_payloads_return_none_rather_than_raising(self, monkeypatch):
+        for payload in (None, {}, {"data": None}, {"data": {}},
+                        {"data": {"primaryData": {"lastSalePrice": "UNCH"}}}):
+            monkeypatch.setattr(prices.scraper, "get_json", lambda *a, _p=payload, **kw: _p)
+            assert prices.from_nasdaq("AAPL") is None
+
+
 class TestFallbackChain:
-    def test_cnbc_is_used_when_yahoo_returns_nothing(self, monkeypatch):
+    def test_nasdaq_is_used_when_yahoo_returns_nothing(self, monkeypatch):
         monkeypatch.setattr(prices, "from_yahoo", lambda *a, **kw: None)
+        monkeypatch.setattr(prices, "from_nasdaq", lambda *a, **kw: {"price": 3.0, "source": "nasdaq"})
+        monkeypatch.setattr(prices, "from_cnbc", lambda *a, **kw: {"price": 1.0, "source": "cnbc"})
+        assert prices.get_quote("AAPL")["source"] == "nasdaq"
+
+    def test_cnbc_is_used_when_yahoo_and_nasdaq_return_nothing(self, monkeypatch):
+        monkeypatch.setattr(prices, "from_yahoo", lambda *a, **kw: None)
+        monkeypatch.setattr(prices, "from_nasdaq", lambda *a, **kw: None)
         monkeypatch.setattr(prices, "from_cnbc", lambda *a, **kw: {"price": 1.0, "source": "cnbc"})
         assert prices.get_quote("AAPL")["source"] == "cnbc"
 
     def test_yahoo_is_preferred_when_available(self, monkeypatch):
         monkeypatch.setattr(prices, "from_yahoo", lambda *a, **kw: {"price": 2.0, "source": "yahoo"})
+        monkeypatch.setattr(prices, "from_nasdaq", lambda *a, **kw: {"price": 3.0, "source": "nasdaq"})
         monkeypatch.setattr(prices, "from_cnbc", lambda *a, **kw: {"price": 1.0, "source": "cnbc"})
         assert prices.get_quote("AAPL")["source"] == "yahoo"
 
-    def test_both_sources_failing_returns_none(self, monkeypatch):
+    def test_every_source_failing_returns_none(self, monkeypatch):
         monkeypatch.setattr(prices, "from_yahoo", lambda *a, **kw: None)
+        monkeypatch.setattr(prices, "from_nasdaq", lambda *a, **kw: None)
         monkeypatch.setattr(prices, "from_cnbc", lambda *a, **kw: None)
         assert prices.get_quote("AAPL") is None
 

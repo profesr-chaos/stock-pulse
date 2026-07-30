@@ -1,15 +1,32 @@
 """News collection: fan out to every source, merge, dedupe, store, score.
 
-Sources, in the order their copy of a story is preferred:
+Seven fetches across five independent operators, so no single company's outage
+or rate limit can take the feed down:
 
+    SEC EDGAR     the filing itself, before anyone reports on it (US, opt-in)
     Finviz        real publisher URLs, dense US coverage
     Yahoo search  thumbnails — the only free image source that costs no request
     Yahoo RSS     summaries
+    Nasdaq RSS    wire copy and Nasdaq editorial, real URLs (US)
+    Bing News     a second search index, unwrapped to real publisher URLs
     Google News   the broadest reach, and the only one that can backfill a month
+
+Spreading the load this way is also the point: seven polite fetches across five
+operators is far kinder to each of them than hammering one supplier, and it
+needs no proxy or IP rotation to stay welcome.
+
+GDELT was tried here and removed. Its global index sounds like the obvious way
+to cover non-US listings, but the phrase search is too loose to use: `"shell"`
+returns awards shows and retirement advice, and the legal suffix that would
+make it precise (`"Shell plc"`) is absent from almost all body copy. Add to
+that a 20-second TLS handshake and a rate limit that 429s at one request per
+five seconds, and it cost more latency per refresh than the six remaining
+sources combined while contributing articles the relevance filter then dropped.
+Bing already supplies the non-US reach it was added for.
 
 They are queried concurrently and merged, so a source going dark degrades
 coverage instead of breaking the refresh. If every source returns nothing, that
-genuinely means there is no news, not that a scraper broke — because four
+genuinely means there is no news, not that a scraper broke — because five
 independent things would have had to break at once.
 """
 from __future__ import annotations
@@ -21,7 +38,7 @@ import settings
 from normalize import days_ago_iso
 
 from .. import dedup, sentiment_service, symbols
-from . import finviz, google_news, images, yahoo_news
+from . import bing_news, finviz, google_news, images, nasdaq_news, sec_edgar, yahoo_news
 
 __all__ = ["collect", "refresh", "backfill", "refresh_watchlist", "images"]
 
@@ -41,10 +58,13 @@ def collect(short_name: str, company_name: str, yahoo_symbol: str | None,
 
     tasks.append(lambda: yahoo_news.fetch_search(ticker))
     tasks.append(lambda: yahoo_news.fetch_rss(ticker))
+    tasks.append(lambda: bing_news.fetch(short_name, company_name, days=days))
 
-    # Finviz only carries US listings.
+    # Finviz, Nasdaq and EDGAR only carry US listings.
     if symbols.is_us_listing(exchange):
         tasks.append(lambda: finviz.fetch(us_ticker))
+        tasks.append(lambda: nasdaq_news.fetch(us_ticker))
+        tasks.append(lambda: sec_edgar.fetch(us_ticker, company_name))
 
     articles: list[dict] = []
     with ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix="news") as pool:

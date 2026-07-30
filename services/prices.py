@@ -1,13 +1,18 @@
 """Prices, free of charge, with a real fallback chain.
 
     1. Yahoo chart v8  — quote *and* daily history in one request, two hosts
-    2. CNBC quote API  — independent host, no key, global coverage
+    2. Nasdaq quote    — US listings, real-time during the session, own host
+    3. CNBC quote API  — independent host, no key, global coverage
 
-Both are hit through the adaptive scraper, so a throttled Yahoo drops its rate
-and CNBC picks up the slack rather than the refresh failing.
+Three different operators, hit through the adaptive scraper, so a throttled
+Yahoo drops its rate and the next source picks up the slack rather than the
+refresh failing. Diversifying across suppliers is what keeps this polite:
+nobody is being leaned on hard enough to notice, and no proxy or IP rotation
+is needed to stay welcome.
 
 History comes from Yahoo only. If Yahoo is unavailable the quote still updates
-from CNBC and the stored history simply stops extending — degraded, not broken.
+from a fallback and the stored history simply stops extending — degraded, not
+broken.
 
 Everything is stored in *major* currency units: LSE quotes arrive in pence and
 Tel Aviv in agorot, and a chart that silently mixes 3323.5 with 33.235 is worse
@@ -17,14 +22,17 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import db
+import settings
 from normalize import days_ago_iso, now_utc, to_iso
 
 from . import symbols, yahoo
 from .http_client import scraper
 
 _CNBC_URL = "https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol"
+_NASDAQ_URL = "https://api.nasdaq.com/api/quote/{symbol}/info"
 
 # Yahoo exchange suffix → CNBC country code, for the cases where CNBC will not
 # take the Yahoo symbol as-is.
@@ -60,6 +68,64 @@ def from_yahoo(yahoo_symbol: str, range_: str = "1mo") -> dict | None:
     if not chart or chart.get("price") is None:
         return None
     return {**chart, "source": "yahoo"}
+
+
+def from_nasdaq(yahoo_symbol: str) -> dict | None:
+    """US listings only, and deliberately so.
+
+    A suffixed symbol names a foreign line — `SHEL.L` is the London ordinary,
+    not the New York ADR — and Nasdaq would happily answer with the ADR at a
+    different price in a different currency. Returning None for anything
+    suffixed is what stops that silent mismatch.
+    """
+    if "." in yahoo_symbol or "^" in yahoo_symbol:
+        return None
+
+    data = scraper.get_json(
+        _NASDAQ_URL.format(symbol=yahoo_symbol.upper()),
+        params={"assetclass": "stocks"},
+        headers={"Accept": "application/json"},
+    )
+    if not isinstance(data, dict):
+        return None
+    quote = data.get("data")
+    if not isinstance(quote, dict):
+        return None
+
+    session = _nasdaq_session(quote)
+    price = _to_float(session.get("lastSalePrice"))
+    if not price:
+        return None
+
+    change = _to_float(session.get("netChange"))
+    return {
+        "symbol": quote.get("symbol") or yahoo_symbol,
+        "exchange": quote.get("exchange"),
+        "currency": "USD",
+        "price": round(price, 6),
+        "previous_close": round(price - change, 6) if change is not None else None,
+        "change": change,
+        "change_percent": _to_float(session.get("percentageChange")),
+        "points": [],
+        "source": "nasdaq",
+    }
+
+
+def _nasdaq_session(quote: dict) -> dict:
+    """The regular-session block, whichever of the two it happens to be.
+
+    Nasdaq splits a quote in two: `primaryData` is whatever is trading right
+    now, and once the bell goes that becomes the extended-hours print while
+    `secondaryData` holds the regular close. Taking primaryData blindly would
+    store an after-hours price as the day's close and put a point on the chart
+    that no other source agrees with, so the regular session wins whenever it
+    is present.
+    """
+    secondary = quote.get("secondaryData")
+    if isinstance(secondary, dict) and secondary.get("lastSalePrice"):
+        return secondary
+    primary = quote.get("primaryData")
+    return primary if isinstance(primary, dict) else {}
 
 
 def from_cnbc(yahoo_symbol: str) -> dict | None:
@@ -128,7 +194,9 @@ def _cnbc_quote(symbol: str) -> dict | None:
 
 def get_quote(yahoo_symbol: str, range_: str = "1mo") -> dict | None:
     """Walk the chain. None only if every source failed."""
-    return from_yahoo(yahoo_symbol, range_=range_) or from_cnbc(yahoo_symbol)
+    return (from_yahoo(yahoo_symbol, range_=range_)
+            or from_nasdaq(yahoo_symbol)
+            or from_cnbc(yahoo_symbol))
 
 
 # ── Refresh (writes to the DB) ───────────────────────────────────────────
@@ -206,21 +274,31 @@ def _store_snapshot(short_name: str, price: float) -> None:
 
 
 def refresh_watchlist(range_: str = "5d") -> dict:
-    """Hourly job: refresh every followed stock."""
+    """Scheduled job: refresh every followed stock, concurrently.
+
+    Sequentially this took one full chain-walk per stock, so a twenty-stock
+    watchlist was minutes behind the market by the time it finished — the
+    opposite of the point. The per-host token buckets in the scraper still
+    pace each source, so this parallelises across stocks without hitting any
+    one source harder than the sequential version did.
+    """
     watched = db.watchlist.get_symbols()
     if not watched:
         return {"updated": [], "failed": []}
 
-    updated, failed = [], []
-    for short_name in watched:
+    def refresh_one(short_name: str) -> bool:
         try:
-            if refresh_stock(short_name, range_=range_):
-                updated.append(short_name)
-            else:
-                failed.append(short_name)
+            return bool(refresh_stock(short_name, range_=range_))
         except Exception as exc:                      # one bad symbol must not
             print(f"[prices] {short_name} errored: {exc}")   # stall the rest
-            failed.append(short_name)
+            return False
+
+    workers = min(settings.SCRAPE_CONCURRENCY, len(watched))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="prices") as pool:
+        outcomes = list(pool.map(refresh_one, watched))
+
+    updated = [s for s, ok in zip(watched, outcomes) if ok]
+    failed = [s for s, ok in zip(watched, outcomes) if not ok]
 
     print(f"[prices] {len(updated)} updated, {len(failed)} failed {failed if failed else ''}")
     return {"updated": updated, "failed": failed}

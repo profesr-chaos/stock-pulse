@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 import db
 import settings
-from normalize import days_ago_iso
+from normalize import days_ago_iso, markets_open
 from services import news, prices, sentiment_service
 from services.http_client import scraper
 
@@ -19,11 +20,26 @@ from services.http_client import scraper
 _backfilling: set[str] = set()
 _backfill_lock = threading.Lock()
 
+# Monotonic stamp of the last refresh that actually ran, for the slow cadence.
+_last_price_refresh = 0.0
+
 
 # ── Scheduled ────────────────────────────────────────────────────────────
 
 def refresh_prices() -> dict:
-    """Hourly. Quote + recent bars for every followed stock."""
+    """Quote + recent bars for every followed stock.
+
+    The scheduler ticks on the fast cadence so an open market is never more
+    than a few minutes stale. Outside trading hours the price cannot move, so
+    most of those ticks return here immediately and only one an hour goes to
+    the network — near-live when it matters, and quiet when it doesn't.
+    """
+    global _last_price_refresh
+    now = time.monotonic()
+    if not markets_open() and now - _last_price_refresh < settings.PRICE_REFRESH_MINUTES * 60:
+        return {"updated": [], "failed": [], "skipped": "markets closed"}
+
+    _last_price_refresh = now
     return prices.refresh_watchlist(range_="5d")
 
 

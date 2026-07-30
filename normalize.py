@@ -111,6 +111,35 @@ def day_str(dt: datetime | date | None = None) -> str:
     return dt.isoformat()
 
 
+# Trading sessions as (start, end) minutes from UTC midnight: Asia-Pacific,
+# Europe/London, and the US. Listed separately rather than as the one range
+# they currently span, so narrowing the app to a single region later is an
+# edit to this tuple and nothing else.
+_SESSIONS_UTC = (
+    (0, 8 * 60),                   # Tokyo, Hong Kong, Sydney
+    (7 * 60, 16 * 60 + 30),        # London, Frankfurt, Paris
+    (13 * 60 + 30, 21 * 60),       # New York, Toronto
+)
+
+
+def markets_open(when: datetime | None = None) -> bool:
+    """Is any major exchange in session?
+
+    Decides whether the fast price refresh is worth making: outside these
+    hours a quote cannot move, so polling every few minutes would just be
+    load on someone else's servers in exchange for an unchanged number.
+
+    ponytail: weekday plus session windows, no exchange holiday calendar. A
+    holiday costs one wasted refresh cycle, never a wrong price. Add a holiday
+    set here if that ever shows up as real load.
+    """
+    when = (when or now_utc()).astimezone(UTC)
+    if when.weekday() >= 5:                    # Saturday, Sunday
+        return False
+    minute = when.hour * 60 + when.minute
+    return any(start <= minute < end for start, end in _SESSIONS_UTC)
+
+
 # ── URLs ─────────────────────────────────────────────────────────────────
 
 # Tracking junk that makes the same article look like several.
@@ -229,15 +258,21 @@ def title_key(title: str) -> str:
 # When several outlets carry the same story, keep the most trustworthy copy.
 # Lower is better.
 _SOURCE_RANK: dict[str, int] = {
+    # The filing outranks everyone reporting on the filing.
+    "sec.gov": 0,
     "reuters.com": 0, "bloomberg.com": 0, "ft.com": 0, "wsj.com": 0,
     "apnews.com": 1, "cnbc.com": 1, "barrons.com": 1, "economist.com": 1,
     "marketwatch.com": 2, "nytimes.com": 2, "theguardian.com": 2, "bbc.co.uk": 2,
-    "bbc.com": 2, "telegraph.co.uk": 2, "thetimes.co.uk": 2,
+    "bbc.com": 2, "telegraph.co.uk": 2, "thetimes.co.uk": 2, "nasdaq.com": 2,
     "investors.com": 3, "seekingalpha.com": 3, "morningstar.com": 3,
     "finance.yahoo.com": 3, "yahoo.com": 3, "forbes.com": 3, "businessinsider.com": 3,
     "fool.com": 4, "zacks.com": 4, "benzinga.com": 4, "investing.com": 4,
-    "thestreet.com": 4, "simplywall.st": 4, "tipranks.com": 4, "insidermonkey.com": 5,
+    "thestreet.com": 4, "simplywall.st": 4, "tipranks.com": 4, "rttnews.com": 4,
+    "proactiveinvestors.co.uk": 4, "insidermonkey.com": 5,
+    # Aggregator republishes: the story is real, the attribution is second-hand.
+    "msn.com": 5,
     "news.google.com": 6,   # unresolved Google redirect: works, but no attribution
+    "bing.com": 6,          # ditto, for the rare link that would not unwrap
 }
 
 _DEFAULT_SOURCE_RANK = 5

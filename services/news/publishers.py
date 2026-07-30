@@ -82,9 +82,24 @@ _BY_NAME: dict[str, str] = {
     "finanzen.net": "finanzen.net",
     "le monde": "lemonde.fr",
     "les echos": "lesechos.fr",
+    "rttnews": "rttnews.com",
+    "nasdaq": "nasdaq.com",
+    "sec edgar": "sec.gov",
+    "invezz": "invezz.com",
+    "baystreet.ca": "baystreet.ca",
+    "the globe and mail": "theglobeandmail.com",
+    "financial post": "financialpost.com",
+    "the economic times": "economictimes.indiatimes.com",
+    "south china morning post": "scmp.com",
+    "msn": "msn.com",
 }
 
 _TRAILING_NOISE = re.compile(r"\s*[-–—|]\s*(news|online|finance|markets?)$", re.I)
+
+# Bing attributes republished stories as "The Motley Fool on MSN". The original
+# publisher is the useful half — it is what ranks and what dedup should match —
+# so the aggregator suffix comes off before the lookup.
+_REPUBLISHED_ON = re.compile(r"\s+on\s+(msn|yahoo|aol|flipboard)\b.*$", re.I)
 
 
 def domain_for(publisher: str | None) -> str:
@@ -94,6 +109,9 @@ def domain_for(publisher: str | None) -> str:
     name = _TRAILING_NOISE.sub("", publisher.strip()).strip().lower()
     if name in _BY_NAME:
         return _BY_NAME[name]
+
+    if (original := _REPUBLISHED_ON.sub("", name).strip()) != name and original in _BY_NAME:
+        return _BY_NAME[original]
 
     # Already a domain, e.g. "reuters.com"
     if "." in name and " " not in name:
