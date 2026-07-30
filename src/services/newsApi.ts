@@ -1,62 +1,50 @@
-import { NewsArticle, NewsListResponse, AISummary } from '@/types/stock';
-import { API_CONFIG } from '@/config/features';
+import type {
+  AISummary,
+  NewsArticle,
+  NewsListResponse,
+  Relevance,
+  SourceCount,
+} from '@/types/stock';
 
-const getHeaders = (requiresAuth: boolean = false): HeadersInit => {
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
-  if (requiresAuth) {
-    const token = localStorage.getItem('token');
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-  }
-  return headers;
-};
+import { apiFetch } from './api';
 
-const apiFetch = async <T>(path: string, requiresAuth: boolean = false): Promise<T> => {
-  const res = await fetch(`${API_CONFIG.NEWS_BASE_URL}${path}`, {
-    headers: getHeaders(requiresAuth),
+export interface NewsQuery {
+  /** Omit to get the whole watchlist's feed in one call. */
+  symbols?: string[];
+  days?: number;
+  since?: string;
+  sentiment?: 'positive' | 'negative' | 'neutral';
+  relevance?: Relevance;
+  limit?: number;
+}
+
+export const getNews = (query: NewsQuery = {}, signal?: AbortSignal): Promise<NewsArticle[]> =>
+  apiFetch<NewsListResponse>('/news', {
+    signal,
+    params: {
+      symbols: query.symbols?.length ? query.symbols.join(',') : undefined,
+      days: query.days,
+      since: query.since,
+      sentiment: query.sentiment,
+      relevance: query.relevance,
+      limit: query.limit,
+    },
+  }).then((data) => data.results);
+
+export const getLatestHeadlines = (limit = 20): Promise<NewsArticle[]> =>
+  apiFetch<NewsListResponse>('/news/latest', { params: { limit } })
+    .then((data) => data.results);
+
+export const getNewsSources = (days = 14): Promise<SourceCount[]> =>
+  apiFetch<{ results: SourceCount[] }>('/news/sources', { params: { days } })
+    .then((data) => data.results);
+
+/** POST because generating a summary can spend API tokens. */
+export const getArticleAiSummary = (id: number): Promise<AISummary> =>
+  apiFetch<AISummary>(`/news/${id}/ai-summary`, { method: 'POST' });
+
+export const getStockAiSummary = (symbol: string, days = 7): Promise<AISummary> =>
+  apiFetch<AISummary>(`/news/stock/${encodeURIComponent(symbol)}/ai-summary`, {
+    method: 'POST',
+    params: { days },
   });
-  if (res.status === 401) throw new Error('unauthorized');
-  if (res.status === 403) throw new Error('upgrade_required');
-  if (!res.ok) throw new Error(`API error ${res.status}: ${res.statusText}`);
-  return res.json();
-};
-
-// ─── Public ────────────────────────────────────────────────
-
-export const getFreeStockNews = async (symbol: string, since?: string): Promise<NewsArticle[]> => {
-  const params = new URLSearchParams({ q: symbol });
-  if (since) params.append('since', since);
-  const data = await apiFetch<NewsListResponse>(`/symbol_free?${params.toString()}`);
-  return data.results;
-};
-
-export const getMultipleStockNews = async (symbols: string[], since?: string): Promise<NewsArticle[]> => {
-  const params = new URLSearchParams({ q: symbols.join(',') });
-  if (since) params.append('since', since);
-  const data = await apiFetch<NewsListResponse>(`/symbol_free?${params.toString()}`);
-  return data.results;
-};
-
-// ─── Authenticated ─────────────────────────────────────────
-
-export const getWatchlistNews = async (since?: string): Promise<NewsArticle[]> => {
-  const params = since ? `?since=${since}` : '';
-  const data = await apiFetch<NewsListResponse>(`/watchlist${params}`);
-  return data.results;
-};
-
-export const getStockNews = async (symbol: string, since?: string): Promise<NewsArticle[]> => {
-  const params = new URLSearchParams({ q: symbol });
-  if (since) params.append('since', since);
-  const data = await apiFetch<NewsListResponse>(`/symbol_premium?${params.toString()}`);
-  return data.results;
-};
-
-export const getArticleAiSummary = async (id: number): Promise<AISummary> => {
-  const data = await apiFetch<AISummary>(`/article_ai_summary/${id}`);
-  return data;
-};
-
-export const getStockAiSummary = async (symbol: string): Promise<AISummary> => {
-  const data = await apiFetch<AISummary>(`/stock_ai_summary/${symbol}`);
-  return data;
-};

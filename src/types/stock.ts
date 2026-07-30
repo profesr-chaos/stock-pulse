@@ -1,68 +1,81 @@
+/** Mirrors routes/schemas.py on the backend. */
+
 export interface Stock {
   symbol: string;
   name: string | null;
-  currencyCode: string | null;
   type: string | null;
   industry: string | null;
+  /** Currency the price is actually quoted in, not the catalogue's guess. */
+  currencyCode: string | null;
+  /** Yahoo exchange code of the resolved listing, e.g. NMS, LSE, GER. */
+  exchange: string | null;
+  yahooSymbol: string | null;
   price: number | null;
   change: number | null;
   changePercent: number | null;
-  inFreeTier: boolean | null;
-  inUse: boolean | null;
+  priceUpdatedAt: string | null;
 }
 
+/** 'direct' names the stock; 'related' is sector context from a curated feed. */
+export type Relevance = 'direct' | 'related';
+
 export interface NewsArticle {
-  // always present
   id: number;
   short_name: string;
-  source: string;
-  publish_time: string;
-  url: string;
   title: string;
-
-  // nullable
+  url: string;
+  /** ISO 8601 UTC, always. */
+  publish_time: string;
+  source: string;
+  source_domain: string | null;
   source_url: string | null;
-  source_country: string | null;
   source_type: string | null;
+  relevance: Relevance;
   lang: string | null;
   image: string | null;
   description: string | null;
-  sentiment: number | null;   // float in TypeScript is just number
+  /** -1 … 1, or null when not yet scored. */
+  sentiment: number | null;
   ai_summary: string | null;
 }
 
-export type Tier = "free" | "basic" | "pro";
-export type TierStatus = "active" | "cancelled" | "past_due" | "paused";
+export interface PricePoint {
+  ts: string;
+  close: number;
+}
 
-export interface User {
-  id: number;
-  email: string;
+export interface PriceSeries {
+  symbol: string;
+  currency: string | null;
+  price: number | null;
+  change: number | null;
+  changePercent: number | null;
+  points: PricePoint[];
+}
+
+export interface TrendingStock {
+  symbol: string;
   name: string | null;
-  avatar_url: string | null;
-  email_verified: boolean;
-  tier: Tier;
-  tier_status: TierStatus;
-  subscription_start: string | null;
-  subscription_renewal: string | null;
-  subscription_end: string | null;
-  is_active: boolean;
-  is_admin: boolean;
+  articleCount: number;
+  avgSentiment: number | null;
+  changePercent: number | null;
 }
 
-export interface TokenUsage {
-  used: number;
-  limit: number;
-  remaining: number;
-  reset_at: string | null;
+export interface Trending {
+  mostDiscussed: TrendingStock[];
+  mostPositive: TrendingStock[];
+  negativeSpikes: TrendingStock[];
 }
 
-export interface Subscription {
-  tier: Tier;
-  tier_status: TierStatus;
-  subscription_id: string | null;
-  subscription_start: string | null;
-  subscription_renewal: string | null;
-  subscription_end: string | null;
+export interface Mover {
+  symbol: string;
+  name: string | null;
+  price: number | null;
+  currencyCode: string | null;
+  changePercent: number | null;
+  sentiment: number | null;
+  sentimentDelta: number | null;
+  articleCount: number;
 }
 
 export interface SentimentHistory {
@@ -76,19 +89,22 @@ export interface SentimentHistory {
 }
 
 export interface AISummary {
-    id: string
-    ai_summary: string 
+  id?: number;
+  symbol?: string;
+  ai_summary: string;
+  cached: boolean;
 }
 
-// API list response wrappers
+export interface SourceCount {
+  source: string;
+  article_count: number;
+}
+
+// ─── List wrappers ─────────────────────────────────────────
 export interface StockListResponse {
   results: Stock[];
 }
 
 export interface NewsListResponse {
   results: NewsArticle[];
-}
-
-export interface SentimentListResponse {
-  results: SentimentHistory[];
 }

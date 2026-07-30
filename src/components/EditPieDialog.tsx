@@ -13,14 +13,15 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Stock } from '@/types/stock';
 import { useStockSearch } from '@/hooks/useStockSearch';
-
+import { toast } from '@/hooks/use-toast';
+import { ApiError } from '@/services/api';
 
 interface EditPieDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   stocks: Stock[];
-  onAddStock: (stock: Stock) => void;
-  onRemoveStock: (symbol: string) => void;
+  onAddStock: (stock: Stock) => Promise<void>;
+  onRemoveStock: (symbol: string) => Promise<void>;
 }
 
 // Neon/tech-style colors
@@ -56,9 +57,18 @@ const EditPieDialog = ({
 
   const isInWatchlist = (symbol: string) => stocks.some(s => s.symbol === symbol);
 
-  const handleAddStock = (stock: Stock) => {
-    onAddStock(stock);
-    setSearchQuery('');
+  const handleAddStock = async (stock: Stock) => {
+    try {
+      await onAddStock(stock);
+      setSearchQuery('');
+    } catch (error) {
+      const isConflict = error instanceof ApiError && error.isConflict;
+      toast({
+        title: isConflict ? 'Already on your watchlist' : 'Could not add that stock',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: isConflict ? 'default' : 'destructive',
+      });
+    }
   };
 
   const showSuggestions = searchQuery.trim().length > 0;
@@ -194,7 +204,7 @@ const EditPieDialog = ({
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 shrink-0 opacity-50 group-hover:opacity-100 transition-opacity"
-                        onClick={() => onRemoveStock(stock.symbol)}
+                        onClick={() => void onRemoveStock(stock.symbol)}
                       >
                         <X className="w-4 h-4" />
                       </Button>

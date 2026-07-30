@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Bot, Loader2, Sparkles } from 'lucide-react';
 import { Stock } from '@/types/stock';
 import { getStockAiSummary } from '@/services/newsApi';
+import { ApiError } from '@/services/api';
 import { AISummary } from '@/types/stock';
 import StreamingText from './StreamingText';
 import {
@@ -34,10 +35,10 @@ const AiStockSummaryDialog = ({ open, onOpenChange, stocks }: AiStockSummaryDial
       const result = await getStockAiSummary(symbol);
       setSummary(result);
     } catch (e) {
-      if (e instanceof Error && e.message === 'upgrade_required') {
-        setError('This feature requires a pro subscription');
-      } else if (e instanceof Error && e.message === 'unauthorized') {
-        setError('Please log in to use this feature');
+      // The only reason this can be unavailable now is a missing DSEEK key;
+      // everything else is a genuine failure worth showing verbatim.
+      if (e instanceof ApiError && e.isUnavailable) {
+        setError('AI summaries need a DeepSeek API key. Set DSEEK in the backend .env file.');
       } else {
         setError(e instanceof Error ? e.message : 'Failed to fetch AI summary');
       }

@@ -8,8 +8,11 @@ interface FocusSectionProps {
 
 const FocusSection = ({ articles, selectedCategories, onCategorySelect }: FocusSectionProps) => {
   
+  // Group by publisher domain: the same outlet reaches us under several
+  // display names ("Barron's" from Google, "Barrons.com" from Finviz), and the
+  // domain is the one stable identity.
   const availableCategories = [...new Set(
-    articles.map(a => a.source).filter(Boolean)
+    articles.map(a => a.source_domain || a.source).filter(Boolean)
   )].sort();
 
   const toggleCategory = (category: string) => {

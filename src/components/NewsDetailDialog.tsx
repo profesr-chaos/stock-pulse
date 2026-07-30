@@ -93,9 +93,9 @@ const NewsDetailDialog = ({ article, open, onOpenChange }: NewsDetailDialogProps
             <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
               {article.source}
             </span>
-            {article.source_country && (
-              <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                {article.source_country}
+            {article.source_domain && article.source_domain !== article.source && (
+              <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
+                {article.source_domain}
               </span>
             )}
           </div>

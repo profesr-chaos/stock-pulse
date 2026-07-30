@@ -1,13 +1,39 @@
-import { TrendingUp, Sun, Moon, LogIn, LogOut, User } from 'lucide-react';
+import { Moon, RefreshCw, Sun, TrendingUp } from 'lucide-react';
 import { useTheme } from 'next-themes';
-import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+
 import { Button } from '@/components/ui/button';
-import { useAuth } from '@/hooks/useAuth';
+import { API_BASE_URL } from '@/config/api';
+import { toast } from '@/hooks/use-toast';
 
 const Header = () => {
   const { theme, setTheme } = useTheme();
-  const { user, isAuthenticated, logout } = useAuth();
-  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Kicks a server-side re-scrape of every followed stock, then re-reads
+  // everything once the background job has had a moment to write.
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/refresh`, { method: 'POST' });
+      if (!response.ok) throw new Error(response.statusText);
+      toast({
+        title: 'Refreshing',
+        description: 'Scraping the latest prices and news in the background.',
+      });
+      window.setTimeout(() => queryClient.invalidateQueries(), 8_000);
+    } catch (error) {
+      toast({
+        title: 'Could not reach the API',
+        description: `Is the backend running on ${API_BASE_URL}?`,
+        variant: 'destructive',
+      });
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   return (
     <header className="border-b border-border/50 bg-card/50 backdrop-blur-xl sticky top-0 z-50">
@@ -19,13 +45,20 @@ const Header = () => {
             </div>
             <div>
               <h1 className="text-xl font-semibold tracking-tight">StockPulse</h1>
-              <p className="text-xs text-muted-foreground">Real-time market insights</p>
+              <p className="text-xs text-muted-foreground">Your stocks, all the news</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20">
-              <span className="text-xs font-medium text-primary">Live</span>
-            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="gap-2"
+            >
+              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Refresh</span>
+            </Button>
             <Button
               variant="ghost"
               size="icon"
@@ -36,28 +69,6 @@ const Header = () => {
               <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
               <span className="sr-only">Toggle theme</span>
             </Button>
-            {isAuthenticated ? (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => navigate('/profile')}
-                  className="flex items-center gap-1"
-                >
-                  <User className="w-4 h-4" />
-                  {user?.name}
-                </Button>
-                <Button variant="ghost" size="sm" onClick={logout}>
-                  <LogOut className="w-4 h-4 mr-1" />
-                  Logout
-                </Button>
-              </div>
-            ) : (
-              <Button variant="outline" size="sm" onClick={() => navigate('/auth')}>
-                <LogIn className="w-4 h-4 mr-1" />
-                Sign In
-              </Button>
-            )}
           </div>
         </div>
       </div>

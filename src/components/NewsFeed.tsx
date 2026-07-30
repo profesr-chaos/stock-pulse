@@ -1,8 +1,11 @@
 import { useMemo, useState, useCallback } from 'react';
 import { Sparkles, RefreshCw, Bot, ArrowUpDown } from 'lucide-react';
-import { Stock, NewsArticle} from '@/types/stock';
+import { Stock, NewsArticle } from '@/types/stock';
 import { useStockNews } from '@/hooks/useStockNews';
 import LatestNewsSidebar from './LatestNewsSidebar';
+import { useTheme } from 'next-themes';
+import previewDark from '@/assets/preview-dark.png';
+import previewLight from '@/assets/preview-light.png';
 import FocusSection from './FocusSection';
 import FeaturedNewsCard from './FeaturedNewsCard';
 import SecondaryNewsRow from './SecondaryNewsRow';
@@ -32,6 +35,7 @@ const NewsFeed = ({ watchlist }: NewsFeedProps) => {
   const [sortBy, setSortBy] = useState<string>('date');
   const [filterStock, setFilterStock] = useState<string>('all');
   const [filterSentiment, setFilterSentiment] = useState<string>('all');
+  const [filterRelevance, setFilterRelevance] = useState<string>('all');
 
   const symbols = useMemo(() => watchlist.map((s) => s.symbol), [watchlist]);
   const { data: allNews = [], isLoading, refetch } = useStockNews(symbols);
@@ -44,12 +48,19 @@ const NewsFeed = ({ watchlist }: NewsFeedProps) => {
   // Filtered and sorted news
   const shuffledMainNews = useMemo(() => {
     let filtered = selectedCategories.length > 0
-      ? allNews.filter(article => selectedCategories.includes(article.source ?? ''))
+      ? allNews.filter((article) =>
+          selectedCategories.includes(article.source_domain ?? article.source),
+        )
       : [...allNews];
 
     // Filter by stock
     if (filterStock !== 'all') {
       filtered = filtered.filter((a) => a.short_name === filterStock);
+    }
+
+    // Hide sector context that never names the stock
+    if (filterRelevance === 'direct') {
+      filtered = filtered.filter((a) => a.relevance === 'direct');
     }
 
     // Filter by sentiment
@@ -69,10 +80,13 @@ const NewsFeed = ({ watchlist }: NewsFeedProps) => {
     } else if (sortBy === 'stock') {
       filtered.sort((a, b) => a.short_name.localeCompare(b.short_name));
     } else if (sortBy === 'sentiment') {
-      const order = { positive: 0, neutral: 1, negative: 2 };
-      filtered.sort((a, b) => (order[a.sentiment ?? 'neutral'] ?? 1) - (order[b.sentiment ?? 'neutral'] ?? 1));
-    } else if (sortBy === 'industry') {
-      filtered.sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''));
+      // Most positive first. sentiment is a number in [-1, 1]; the previous
+      // version indexed a string map with it, so this sort never did anything.
+      filtered.sort((a, b) => (b.sentiment ?? 0) - (a.sentiment ?? 0));
+    } else if (sortBy === 'source') {
+      filtered.sort((a, b) =>
+        (a.source_domain ?? a.source).localeCompare(b.source_domain ?? b.source),
+      );
     }
 
     // Shuffle on top if requested
@@ -82,16 +96,16 @@ const NewsFeed = ({ watchlist }: NewsFeedProps) => {
         [filtered[i], filtered[j]] = [filtered[j], filtered[i]];
       }
     }
-    
+
     return filtered;
-  }, [allNews, selectedCategories, shuffleKey, sortBy, filterStock, filterSentiment]);
+  }, [allNews, selectedCategories, shuffleKey, sortBy, filterStock, filterSentiment, filterRelevance]);
 
   const handleRefresh = useCallback(() => {
     setIsShaking(true);
     setShuffleKey((prev) => prev + 1);
     // Also refetch from API when not using mock data
     refetch();
-    
+
     setTimeout(() => {
       setIsShaking(false);
     }, 500);
@@ -105,17 +119,35 @@ const NewsFeed = ({ watchlist }: NewsFeedProps) => {
   const secondaryArticles = shuffledMainNews.slice(4, 7);
   const additionalFeatured = shuffledMainNews.slice(7, 13);
   const sidebarArticles = allNews;
+  const { resolvedTheme } = useTheme();
 
   if (watchlist.length === 0) {
     return (
-      <div className="glass-card p-12 text-center">
-        <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-primary/10 flex items-center justify-center">
-          <Sparkles className="w-8 h-8 text-primary" />
+      <div className="glass-card p-8 md:p-12">
+        <div className="flex flex-col md:flex-row gap-8 items-center">
+          {/* Left: Text */}
+          <div className="md:w-5/12 text-left shrink-0">
+            <div className="w-16 h-16 mb-4 rounded-2xl bg-primary/10 flex items-center justify-center">
+              <Sparkles className="w-8 h-8 text-primary" />
+            </div>
+            <h3 className="text-xl font-semibold mb-2">Start tracking stocks</h3>
+            <p className="text-muted-foreground">
+              Search and add stocks to your watchlist to see the latest news and market updates
+            </p>
+          </div>
+
+          {/* Right: Preview Image */}
+          <div className="md:w-7/12 min-w-0">
+            <div className="rounded-xl border border-border/30 shadow-lg overflow-hidden">
+              <img
+                src={resolvedTheme === 'light' ? previewLight : previewDark}
+                alt="StockPulse dashboard preview showing stock tracking and news feed"
+                className="w-full h-auto"
+                loading="lazy"
+              />
+            </div>
+          </div>
         </div>
-        <h3 className="text-xl font-semibold mb-2">Start tracking stocks</h3>
-        <p className="text-muted-foreground max-w-md mx-auto">
-          Search and add stocks to your watchlist to see the latest news and market updates
-        </p>
       </div>
     );
   }
@@ -162,7 +194,7 @@ const NewsFeed = ({ watchlist }: NewsFeedProps) => {
                     <SelectItem value="date">Date</SelectItem>
                     <SelectItem value="stock">Stock</SelectItem>
                     <SelectItem value="sentiment">Sentiment</SelectItem>
-                    <SelectItem value="industry">Industry</SelectItem>
+                    <SelectItem value="source">Source</SelectItem>
                   </SelectContent>
                 </Select>
 
@@ -187,6 +219,16 @@ const NewsFeed = ({ watchlist }: NewsFeedProps) => {
                     <SelectItem value="positive">Positive</SelectItem>
                     <SelectItem value="neutral">Neutral</SelectItem>
                     <SelectItem value="negative">Negative</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select value={filterRelevance} onValueChange={setFilterRelevance}>
+                  <SelectTrigger className="w-[150px] h-9 text-xs border-border/50">
+                    <SelectValue placeholder="All Coverage" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Coverage</SelectItem>
+                    <SelectItem value="direct">Names the stock</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
