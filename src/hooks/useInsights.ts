@@ -10,10 +10,12 @@ export const useTrending = (days = 3) =>
     staleTime: STALE_TIME.insights,
   });
 
-export const useMovers = (days = 3) =>
+/** Everything the Trending Tickers panel needs; gainers and losers are the
+ *  two halves of the same ranked list, so one request covers both. */
+export const useMovers = (days = 3, limit = 30) =>
   useQuery({
-    queryKey: ['insights', 'movers', days],
-    queryFn: () => getMovers(days),
+    queryKey: ['insights', 'movers', days, limit],
+    queryFn: () => getMovers(days, limit, days === 3 && limit === 30 ? 'movers' : undefined),
     staleTime: STALE_TIME.insights,
   });
 

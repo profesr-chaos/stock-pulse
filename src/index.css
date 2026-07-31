@@ -1,192 +1,71 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-
+/* No @import of a webfont: it would block the first paint on a third-party
+   round trip for glyphs the system already has. FT's own faces are licensed,
+   so Georgia carries the headlines and the platform sans carries everything
+   else. This is the single largest render-blocking cost removed. */
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-
 @layer base {
-  :root {
-    --background: 210 40% 98%;
-    --foreground: 220 20% 10%;
-
-    --card: 0 0% 100%;
-    --card-foreground: 220 20% 10%;
-
-    --popover: 0 0% 100%;
-    --popover-foreground: 220 20% 10%;
-
-    --primary: 217 91% 60%;
-    --primary-foreground: 0 0% 100%;
-
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 220 20% 10%;
-
-    --muted: 210 40% 94%;
-    --muted-foreground: 215 15% 45%;
-
-    --accent: 210 40% 92%;
-    --accent-foreground: 220 20% 10%;
-
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-
-    --success: 142 70% 45%;
-    --success-foreground: 0 0% 100%;
-
-    --warning: 38 92% 50%;
-    --warning-foreground: 220 20% 10%;
-
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 217 91% 60%;
-
-    --radius: 0.75rem;
-
-    --chart-1: 217 91% 60%;
-    --chart-2: 199 89% 48%;
-    --chart-3: 38 92% 50%;
-    --chart-4: 280 65% 60%;
-    --chart-5: 0 72% 51%;
-
-    --gradient-primary: linear-gradient(135deg, hsl(217 91% 60%) 0%, hsl(230 85% 55%) 100%);
-    --gradient-card: linear-gradient(180deg, hsl(0 0% 100%) 0%, hsl(210 40% 98%) 100%);
-    --gradient-hero: linear-gradient(135deg, hsl(210 40% 98%) 0%, hsl(214 32% 95%) 50%, hsl(210 40% 98%) 100%);
-
-    --shadow-glow: 0 0 40px -10px hsl(217 91% 60% / 0.3);
-    --shadow-card: 0 4px 24px -4px hsl(0 0% 0% / 0.1);
-  }
-
-  .dark {
-    --background: 220 20% 4%;
-    --foreground: 210 20% 98%;
-
-    --card: 220 18% 7%;
-    --card-foreground: 210 20% 98%;
-
-    --popover: 220 18% 7%;
-    --popover-foreground: 210 20% 98%;
-
-    --primary: 142 70% 45%;
-    --primary-foreground: 220 20% 4%;
-
-    --secondary: 220 14% 14%;
-    --secondary-foreground: 210 20% 98%;
-
-    --muted: 220 14% 12%;
-    --muted-foreground: 215 15% 55%;
-
-    --accent: 220 14% 16%;
-    --accent-foreground: 210 20% 98%;
-
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 210 20% 98%;
-
-    --success: 142 70% 45%;
-    --success-foreground: 220 20% 4%;
-
-    --warning: 38 92% 50%;
-    --warning-foreground: 220 20% 4%;
-
-    --border: 220 14% 16%;
-    --input: 220 14% 16%;
-    --ring: 142 70% 45%;
-
-    --chart-1: 142 70% 45%;
-    --chart-2: 199 89% 48%;
-    --chart-3: 38 92% 50%;
-    --chart-4: 280 65% 60%;
-    --chart-5: 0 72% 51%;
-
-    --gradient-primary: linear-gradient(135deg, hsl(142 70% 45%) 0%, hsl(160 70% 40%) 100%);
-    --gradient-card: linear-gradient(180deg, hsl(220 18% 9%) 0%, hsl(220 18% 6%) 100%);
-    --gradient-hero: linear-gradient(135deg, hsl(220 20% 4%) 0%, hsl(220 25% 8%) 50%, hsl(220 20% 4%) 100%);
-
-    --shadow-glow: 0 0 40px -10px hsl(142 70% 45% / 0.3);
-    --shadow-card: 0 4px 24px -4px hsl(0 0% 0% / 0.4);
-  }
-}
-
-@layer base {
-  * {
-    @apply border-border;
+  html {
+    /* Colour the canvas before React has run, so the first frame is already
+       FT paper rather than a white flash. */
+    background-color: #fff1e5;
+    -webkit-text-size-adjust: 100%;
   }
 
   body {
-    @apply bg-background text-foreground font-sans antialiased;
-    font-family: 'Inter', system-ui, sans-serif;
+    @apply bg-paper text-ink font-sans antialiased;
+    font-size: 16px;
+    line-height: 1.4;
   }
 
-  .font-mono {
-    font-family: 'JetBrains Mono', monospace;
+  /* Flat means flat: nothing in the app gets a corner or a shadow. */
+  * {
+    @apply border-rule;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid #0f5499;
+    outline-offset: 2px;
   }
 }
 
 @layer components {
-  .glass-card {
-    @apply bg-card/80 backdrop-blur-xl border border-border/50 rounded-xl;
-    box-shadow: var(--shadow-card);
+  /* The FT section marker: a heavy rule above the label, nothing below it. */
+  .ft-section {
+    @apply border-t-2 border-ink-strong pt-2;
   }
 
-  .glow-effect {
-    box-shadow: var(--shadow-glow);
+  .ft-section-title {
+    @apply font-serif text-xl font-semibold text-ink-strong leading-none;
   }
 
-  .gradient-text {
-    @apply bg-clip-text text-transparent;
-    background-image: var(--gradient-primary);
+  /* Headlines are serif; everything supporting them is sans. */
+  .ft-headline {
+    @apply font-serif font-semibold text-ink-strong;
+    letter-spacing: -0.01em;
   }
 
-  .stock-ticker {
-    @apply font-mono text-sm tracking-wider;
+  a:hover .ft-headline {
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
 
-  .news-card-hover {
-    @apply transition-all duration-300 hover:scale-[1.02] hover:border-primary/30;
-  }
-}
-
-@layer utilities {
-  .animate-fade-in {
-    animation: fadeIn 0.5s ease-out forwards;
+  .ft-meta {
+    @apply text-xs text-ink-muted;
   }
 
-  .animate-slide-up {
-    animation: slideUp 0.5s ease-out forwards;
-  }
-
-  .animate-pulse-glow {
-    animation: pulseGlow 2s ease-in-out infinite;
-  }
-
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-
-  @keyframes slideUp {
-    from {
-      opacity: 0;
-      transform: translateY(20px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  @keyframes pulseGlow {
-    0%, 100% {
-      box-shadow: 0 0 20px -5px hsl(var(--primary) / 0.3);
-    }
-    50% {
-      box-shadow: 0 0 30px -5px hsl(var(--primary) / 0.5);
-    }
+  /* Ticker chip — a hairline box, no fill, no radius. */
+  .ft-chip {
+    @apply inline-flex items-center gap-1 border border-rule px-1.5 py-0.5
+           font-mono text-[11px] leading-none;
   }
 }
 
@@ -197,5 +76,16 @@
   }
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Clamp headlines to keep the grid honest without measuring anything. */
+  .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .line-clamp-4 { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-marquee {
+      animation: none !important;
+    }
   }
 }

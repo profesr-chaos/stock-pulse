@@ -1,19 +1,20 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ThemeProvider } from "next-themes";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-import { Toaster as Sonner } from "@/components/ui/sonner";
-import { Toaster } from "@/components/ui/toaster";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import Home from './pages/Home';
 
-import Index from "./pages/Index";
-import NotFound from "./pages/NotFound";
-
+/**
+ * One screen, one provider.
+ *
+ * No router: there is a single view, and react-router was shipping a matcher
+ * and a history stack to decide between "/" and a 404 page. No theme provider
+ * either — FT is one palette on paper, and a dark mode nobody asked for is a
+ * class toggle plus a second set of tokens to keep in sync.
+ */
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       // The API is local, so a failed request means the backend is down;
-      // retrying twice surfaces that quickly instead of hanging.
+      // retrying once surfaces that quickly instead of hanging.
       retry: 1,
       refetchOnWindowFocus: false,
     },
@@ -22,19 +23,7 @@ const queryClient = new QueryClient({
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
-    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-      <TooltipProvider>
-        <Toaster />
-        <Sonner />
-        <BrowserRouter>
-          <Routes>
-            <Route path="/" element={<Index />} />
-            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </BrowserRouter>
-      </TooltipProvider>
-    </ThemeProvider>
+    <Home />
   </QueryClientProvider>
 );
 

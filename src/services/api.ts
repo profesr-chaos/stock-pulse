@@ -27,15 +27,48 @@ export class ApiError extends Error {
   }
 }
 
+/** The above-the-fold requests index.html starts before the bundle boots. */
+export type BootKey = 'watchlist' | 'trending' | 'latest' | 'movers';
+
+declare global {
+  interface Window {
+    __BOOT__?: Partial<Record<BootKey, Promise<unknown>>>;
+    __BOOT_BASE__?: string;
+  }
+}
+
+/**
+ * Claim a preloaded response, once.
+ *
+ * Only valid while the app is pointed at the origin the preload used, and only
+ * for the first render — after that the query has real params and has to ask
+ * the server itself.
+ */
+const takeBoot = <T>(key: BootKey): Promise<T> | null => {
+  const boot = window.__BOOT__;
+  if (!boot?.[key] || window.__BOOT_BASE__ !== API_BASE_URL) return null;
+  const promise = boot[key] as Promise<T>;
+  delete boot[key];
+  return promise;
+};
+
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   body?: unknown;
   params?: Record<string, string | number | undefined | null>;
   signal?: AbortSignal;
+  /** Serve the first call from index.html's preload if it is still unclaimed. */
+  boot?: BootKey;
 }
 
 export const apiFetch = async <T>(path: string, options: RequestOptions = {}): Promise<T> => {
-  const { method = 'GET', body, params, signal } = options;
+  const { method = 'GET', body, params, signal, boot } = options;
+
+  if (boot) {
+    const preloaded = takeBoot<T>(boot);
+    // A failed preload is not a failed request — fall through and ask properly.
+    if (preloaded) return preloaded.catch(() => apiFetch<T>(path, { ...options, boot: undefined }));
+  }
 
   const url = new URL(`${API_BASE_URL}${path}`);
   if (params) {

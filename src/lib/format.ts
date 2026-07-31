@@ -43,6 +43,27 @@ export const formatAge = (iso: string | null | undefined): string => {
   return `${Math.round(hours / 24)}d`;
 };
 
+/** Longer relative age for datelines: "31 min ago", "2 hr ago", "3 days ago". */
+export const formatAgeLong = (iso: string | null | undefined): string => {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '';
+  const minutes = Math.max(0, Math.round((Date.now() - then) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? 'yesterday' : `${days} days ago`;
+};
+
+/** Up/down colour. The sign is always printed too, so colour is never the
+ *  only channel carrying the direction. */
+export const changeClass = (value: number | null | undefined): string => {
+  if (value === null || value === undefined || value === 0) return 'text-ink-muted';
+  return value > 0 ? 'text-up' : 'text-down';
+};
+
 export type SentimentBand = 'positive' | 'negative' | 'neutral';
 
 export const sentimentBand = (score: number | null | undefined): SentimentBand => {
@@ -54,14 +75,14 @@ export const sentimentBand = (score: number | null | undefined): SentimentBand =
 
 export const sentimentTextClass = (score: number | null | undefined): string =>
   ({
-    positive: 'text-emerald-500',
-    negative: 'text-red-500',
-    neutral: 'text-muted-foreground',
+    positive: 'text-up',
+    negative: 'text-down',
+    neutral: 'text-ink-muted',
   })[sentimentBand(score)];
 
 export const sentimentDotClass = (score: number | null | undefined): string =>
   ({
-    positive: 'bg-emerald-500',
-    negative: 'bg-red-500',
-    neutral: 'bg-muted-foreground',
+    positive: 'bg-up',
+    negative: 'bg-down',
+    neutral: 'bg-ink-muted',
   })[sentimentBand(score)];

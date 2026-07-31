@@ -37,6 +37,8 @@ export interface NewsArticle {
   /** -1 … 1, or null when not yet scored. */
   sentiment: number | null;
   ai_summary: string | null;
+  /** The stock's price move. Only set on /news/trending, which ranks by it. */
+  movePercent?: number | null;
 }
 
 export interface PricePoint {

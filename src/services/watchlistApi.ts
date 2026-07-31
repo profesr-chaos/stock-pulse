@@ -2,8 +2,8 @@ import type { Stock, StockListResponse } from '@/types/stock';
 
 import { apiFetch } from './api';
 
-export const getWatchlist = (): Promise<Stock[]> =>
-  apiFetch<StockListResponse>('/watchlist').then((data) => data.results);
+export const getWatchlist = (boot?: 'watchlist'): Promise<Stock[]> =>
+  apiFetch<StockListResponse>('/watchlist', { boot }).then((data) => data.results);
 
 /**
  * Follow a stock. The backend starts a month-long price and news backfill in

@@ -3,17 +3,46 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>StockPulse - Real-time Market Insights</title>
-    <meta name="description" content="Stay ahead of the market with personalized stock news updates in real-time" />
-    <meta name="author" content="StockPulse" />
+    <title>Stock Pulse — markets, news and movers</title>
+    <meta name="description" content="Stock news ranked by how far the price moved, with trending tickers and top gainers and losers." />
+    <meta name="theme-color" content="#FFF1E5" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 
-    <meta property="og:title" content="StockPulse - Real-time Market Insights" />
-    <meta property="og:description" content="Stay ahead of the market with personalized stock news updates in real-time" />
-    <meta property="og:type" content="website" />
+    <!-- The API is a separate origin, so open the connection during HTML parse
+         instead of paying DNS + TCP + preflight after the bundle boots. The
+         literal is a fallback for an unset VITE_API_URL — it has to match the
+         base the boot script below resolves, or it warms the wrong socket. -->
+    <link rel="preconnect" href="%VITE_API_URL%" crossorigin />
+    <link rel="preconnect" href="http://127.0.0.1:5000" crossorigin />
 
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:site" content="@StockPulse" />
+    <!-- Hero data preload. Everything above the fold is one of these four
+         requests; firing them here starts them ~200-400ms before React would.
+         Consumed by takeBoot() in src/services/api.ts, which falls back to a
+         normal request if one of these failed. -->
+    <script>
+      (function () {
+        var base = "%VITE_API_URL%";
+        if (base.charAt(0) === "%") base = "http://127.0.0.1:5000";
+        window.__BOOT_BASE__ = base;
+        window.__BOOT__ = {};
+        var paths = {
+          watchlist: "/watchlist",
+          trending: "/news/trending?days=2&per_stock=3&limit=12",
+          latest: "/news?days=14&relevance=direct&limit=40",
+          movers: "/insights/movers?days=3&limit=30",
+        };
+        Object.keys(paths).forEach(function (key) {
+          var promise = fetch(base + paths[key], { priority: "high" }).then(function (res) {
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            return res.json();
+          });
+          // Silence the unhandled rejection when the backend is down; the
+          // consumer still sees the rejection and retries for real.
+          promise.catch(function () {});
+          window.__BOOT__[key] = promise;
+        });
+      })();
+    </script>
   </head>
 
   <body>

@@ -28,7 +28,7 @@ export const useWatchlist = () => {
 
   const query = useQuery({
     queryKey: WATCHLIST_KEY,
-    queryFn: getWatchlist,
+    queryFn: () => getWatchlist('watchlist'),
     staleTime: 30_000,
   });
 
