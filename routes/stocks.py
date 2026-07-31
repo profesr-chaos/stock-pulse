@@ -11,6 +11,8 @@ from services import prices
 from .schemas import (
     PricePoint,
     PriceSeries,
+    Sector,
+    SectorList,
     Stock,
     StockList,
     parse_symbols,
@@ -24,6 +26,23 @@ router = APIRouter(prefix="/stocks", tags=["Stocks"])
 @router.get("/search", response_model=StockList)
 def search(q: str = Query(..., min_length=1, max_length=64)):
     return StockList(results=[to_stock(s) for s in db.stocks.search_stocks(q.strip())])
+
+
+@router.get("/sectors", response_model=SectorList)
+def sectors(watchlist_only: bool = Query(True)):
+    """Sectors available to filter by, most-held first.
+
+    Scoped to the watchlist by default: the catalogue holds 15k instruments but
+    only followed stocks have news, so offering the full taxonomy would be a
+    menu of mostly-empty filters. Anything unclassified — funds and indices,
+    which Yahoo does not label — is simply absent.
+    """
+    symbols = db.watchlist.get_symbols() if watchlist_only else None
+    return SectorList(results=[
+        Sector(sector=r["sector"], level=r["level"],
+               group=r.get("group_name"), stockCount=r["stock_count"])
+        for r in db.stocks.get_sectors(symbols)
+    ])
 
 
 @router.get("/popular", response_model=StockList)

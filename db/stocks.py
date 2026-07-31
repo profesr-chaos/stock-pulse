@@ -6,7 +6,7 @@ from normalize import now_iso
 from .connection import get_connection, one, rows
 
 _ALLOWED_UPDATE_FIELDS = frozenset({
-    "name", "type", "currency_code", "industry",
+    "name", "type", "currency_code", "industry", "sector",
     "yahoo_symbol", "exchange", "quote_currency", "resolved_at",
     "price", "price_change", "price_change_percent", "price_updated_at",
 })
@@ -63,6 +63,65 @@ def search_stocks(query: str, limit: int = 25) -> list[dict]:
                 short_name
             LIMIT ?
         """, (prefix, contains, q.upper(), prefix, prefix, limit)))
+
+
+def get_sectors(short_names: list[str] | None = None) -> list[dict]:
+    """Sectors available to filter by, at both of Yahoo's levels.
+
+    Neither level works alone. `sector` is eleven buckets wide, so Rocket Lab
+    sits in "Industrials" next to a lift manufacturer — useless for "show me
+    space stocks". `industry` is precise ("Aerospace & Defense") but so narrow
+    that a twelve-stock watchlist produces ten filters holding one stock each.
+
+    So both are returned, tagged with `level`, and symbols_in_sector() matches
+    either column. Broad browsing and precise filtering out of one list.
+    """
+    if short_names is not None and not short_names:
+        return []
+
+    scope, params = "", []
+    if short_names is not None:
+        marks = ",".join("?" * len(short_names))
+        scope = f"AND short_name IN ({marks})"
+        params = list(short_names)
+
+    with get_connection() as conn:
+        return rows(conn.execute(f"""
+            SELECT sector AS sector, 'group' AS level, NULL AS group_name,
+                   COUNT(*) AS stock_count
+            FROM stocks
+            WHERE sector IS NOT NULL AND sector != '' {scope}
+            GROUP BY sector
+
+            UNION ALL
+
+            SELECT industry AS sector, 'industry' AS level, MIN(sector) AS group_name,
+                   COUNT(*) AS stock_count
+            FROM stocks
+            WHERE industry IS NOT NULL AND industry != '' {scope}
+            GROUP BY industry
+
+            ORDER BY stock_count DESC, level, sector
+        """, [*params, *params]))
+
+
+def symbols_in_sector(sector: str, short_names: list[str] | None = None) -> list[str]:
+    """Which of these stocks belong to a sector. Matches the coarse `sector`
+    column too, so "Industrials" works as well as "Aerospace & Defense"."""
+    if not sector:
+        return []
+    where = ["(industry = ? OR sector = ?)"]
+    params: list = [sector, sector]
+    if short_names is not None:
+        if not short_names:
+            return []
+        where.append(f"short_name IN ({','.join('?' * len(short_names))})")
+        params += short_names
+
+    with get_connection() as conn:
+        return [r["short_name"] for r in conn.execute(
+            f"SELECT short_name FROM stocks WHERE {' AND '.join(where)}", params
+        )]
 
 
 def count_stocks() -> int:

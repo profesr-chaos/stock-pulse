@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS stocks (
     name                  TEXT NOT NULL,
     currency_code         TEXT,
     type                  TEXT NOT NULL,
+    -- Yahoo's taxonomy, captured during symbol resolution. `sector` is the
+    -- coarse bucket ("Industrials"); `industry` is what people actually mean
+    -- by a sector in conversation ("Aerospace & Defense" is the space one).
+    sector                TEXT,
     industry              TEXT,
     -- resolved best listing for this instrument (see services/symbols.py)
     yahoo_symbol          TEXT,
@@ -154,6 +158,7 @@ _ADDED_COLUMNS = [
     ("stocks", "quote_currency", "TEXT"),
     ("stocks", "resolved_at", "TEXT"),
     ("stocks", "price_updated_at", "TEXT"),
+    ("stocks", "sector", "TEXT"),
     ("news", "url_hash", "TEXT"),
     ("news", "title_key", "TEXT"),
     ("news", "source_domain", "TEXT"),

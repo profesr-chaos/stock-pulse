@@ -94,12 +94,31 @@ def get_news_by_id(news_id: int) -> dict | None:
         return one(conn.execute("SELECT * FROM news WHERE id = ?", (news_id,)))
 
 
+# Every ordering ends with `publish_time DESC, id DESC`.
+#
+# That tail is what makes offset paging safe: without a total order SQLite may
+# return ties in any order between two queries, so page 2 could repeat or skip
+# rows page 1 already showed. Sorting by sentiment alone puts thousands of
+# articles on identical scores — exactly the case where that breaks.
+_SORTS = {
+    "recent":    "publish_time DESC, id DESC",
+    "sentiment": "sentiment IS NULL, sentiment DESC, publish_time DESC, id DESC",
+    "symbol":    "short_name ASC, publish_time DESC, id DESC",
+    # "most news articles" is a property of the stock, not the article, so it
+    # ranks by how much coverage the article's ticker has in this same window.
+    "coverage":  "coverage DESC, short_name ASC, publish_time DESC, id DESC",
+}
+DEFAULT_SORT = "recent"
+
+
 def get_news(
     short_names: list[str] | None = None,
     since: str | None = None,
     until: str | None = None,
     sentiment: str | None = None,
     relevance: str | None = None,
+    query: str | None = None,
+    sort: str | None = None,
     limit: int = 200,
     offset: int = 0,
 ) -> list[dict]:
@@ -109,9 +128,11 @@ def get_news(
     and returns nothing. Treating the two the same would turn a request for an
     empty watchlist into a dump of the entire table.
 
-    `offset` paginates the infinite-scroll river. The ORDER BY is total
-    (publish_time, id) so a page boundary can't drop or repeat an article the
-    way a non-deterministic sort would.
+    `query` is a free-text match over title, description and ticker. `sort` is
+    one of _SORTS. Both are applied in SQL, not to an already-fetched page, so
+    they search and order the whole table rather than the current screen.
+
+    `offset` paginates the infinite-scroll river.
     """
     if short_names is not None and not short_names:
         return []
@@ -137,12 +158,31 @@ def get_news(
     elif sentiment == "neutral":
         where.append("(sentiment IS NULL OR sentiment BETWEEN -0.2 AND 0.2)")
 
-    params += [limit, offset]
+    term = (query or "").strip()
+    if term:
+        # LIKE with escaped wildcards: a user searching "100%" must not get
+        # every article back. ESCAPE makes \% and \_ literal.
+        pattern = "%" + term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%"
+        where.append(
+            "(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' "
+            "OR short_name LIKE ? ESCAPE '\\')"
+        )
+        params += [pattern, pattern, pattern]
+
+    order = _SORTS.get(sort or DEFAULT_SORT, _SORTS[DEFAULT_SORT])
+    filter_sql = " AND ".join(where)
+
+    # `coverage` needs a per-ticker count over the *filtered* set, so the window
+    # is computed after the WHERE rather than over the whole table.
+    select = "SELECT *"
+    if order.startswith("coverage"):
+        select = "SELECT *, COUNT(*) OVER (PARTITION BY short_name) AS coverage"
+
     with get_connection() as conn:
         return rows(conn.execute(
-            f"SELECT * FROM news WHERE {' AND '.join(where)} "
-            f"ORDER BY publish_time DESC, id DESC LIMIT ? OFFSET ?",
-            params,
+            f"{select} FROM news WHERE {filter_sql} "
+            f"ORDER BY {order} LIMIT ? OFFSET ?",
+            [*params, limit, offset],
         ))
 
 

@@ -213,9 +213,42 @@ def ensure_resolved(stock: dict) -> str | None:
         stock["short_name"], resolved["symbol"],
         resolved.get("exchange"), resolved.get("currency"),
     )
+    _store_classification(stock["short_name"], resolved)
     print(f"[prices] resolved {stock['short_name']} -> "
           f"{resolved['symbol']} ({resolved.get('exchange')})")
     return resolved["symbol"]
+
+
+def _store_classification(short_name: str, resolved: dict) -> None:
+    """Persist Yahoo's sector/industry, when it gave us one."""
+    fields = {k: resolved.get(k) for k in ("sector", "industry") if resolved.get(k)}
+    if fields:
+        db.stocks.update_stock(short_name, **fields)
+
+
+def ensure_classified(stock: dict) -> bool:
+    """Fill in a missing sector for an already-resolved stock.
+
+    Resolution caches `yahoo_symbol` on the row, so every stock followed before
+    the sector column existed short-circuits ensure_resolved() and would never
+    pick one up. This re-runs just the search half — `validate=False` skips the
+    chart call, since we already trust the symbol and only want its label.
+
+    ETFs and indices are genuinely unclassified by Yahoo, so a stock that comes
+    back empty is not retried into a loop: it is simply left NULL and filtered
+    out of the sector list.
+    """
+    if stock.get("sector") or not stock.get("yahoo_symbol"):
+        return False
+
+    resolved = symbols.resolve(stock["short_name"], stock.get("name"), validate=False)
+    if not resolved or not resolved.get("sector"):
+        return False
+
+    _store_classification(stock["short_name"], resolved)
+    print(f"[prices] classified {stock['short_name']} -> {resolved['sector']}"
+          f" / {resolved.get('industry')}")
+    return True
 
 
 def refresh_stock(short_name: str, range_: str = "5d") -> dict | None:
@@ -288,7 +321,13 @@ def refresh_watchlist(range_: str = "5d") -> dict:
 
     def refresh_one(short_name: str) -> bool:
         try:
-            return bool(refresh_stock(short_name, range_=range_))
+            ok = bool(refresh_stock(short_name, range_=range_))
+            # After the quote, so a classification lookup can never cost the
+            # price its refresh. Only ever does work once per stock.
+            stock = db.stocks.get_stock(short_name)
+            if stock:
+                ensure_classified(stock)
+            return ok
         except Exception as exc:                      # one bad symbol must not
             print(f"[prices] {short_name} errored: {exc}")   # stall the rest
             return False

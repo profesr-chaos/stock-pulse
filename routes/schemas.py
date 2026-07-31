@@ -19,6 +19,7 @@ class Stock(BaseModel):
     symbol: str
     name: Optional[str] = None
     type: Optional[str] = None
+    sector: Optional[str] = None
     industry: Optional[str] = None
     currencyCode: Optional[str] = None
     exchange: Optional[str] = None
@@ -31,6 +32,20 @@ class Stock(BaseModel):
 
 class StockList(BaseModel):
     results: list[Stock]
+
+
+class Sector(BaseModel):
+    sector: str
+    # "group" is Yahoo's coarse bucket (Industrials); "industry" is the precise
+    # one (Aerospace & Defense). Both are offered as filters.
+    level: str = "industry"
+    # The coarse bucket an industry belongs to; None on group rows.
+    group: Optional[str] = None
+    stockCount: int
+
+
+class SectorList(BaseModel):
+    results: list[Sector]
 
 
 class NewsArticle(BaseModel):
@@ -108,6 +123,7 @@ def to_stock(row: dict) -> Stock:
         symbol=row["short_name"],
         name=row.get("name"),
         type=row.get("type"),
+        sector=row.get("sector"),
         industry=row.get("industry"),
         # The quote currency is the one the price is actually in; the catalogue
         # currency is unreliable (Trading212 lists TSLA as EUR).

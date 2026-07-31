@@ -133,6 +133,12 @@ def score_candidates(short_name: str, catalogue_name: str, candidates: list[dict
             "exchange": candidate.get("exchange"),
             "name": candidate.get("longname") or candidate.get("shortname") or catalogue_name,
             "quote_type": (candidate.get("quoteType") or "").upper(),
+            # Yahoo's search payload already carries the classification, so the
+            # sector comes free with resolution — no second request, and no
+            # quoteSummary call (that one now demands a crumb). Funds and
+            # indices return null for both; only equities are classified.
+            "sector": candidate.get("sector"),
+            "industry": candidate.get("industry"),
             "rank": _ranked(symbol, candidate.get("exchange")),
             "name_score": matched_name,
             "exact_symbol": exact_symbol,

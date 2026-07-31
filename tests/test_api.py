@@ -61,6 +61,61 @@ class TestSearch:
         assert client.get("/stocks/search?q=zzzznotathing").json()["results"] == []
 
 
+class TestSectors:
+    """Sector filtering, which only works because resolution stores Yahoo's
+    classification on the stock row."""
+
+    @pytest.fixture(autouse=True)
+    def classify(self, client):
+        db.stocks.update_stock("6RJ0", sector="Industrials", industry="Aerospace & Defense")
+        db.stocks.update_stock("AAPL", sector="Technology", industry="Consumer Electronics")
+        db.news.insert_news_many([
+            {"short_name": "6RJ0", "title": "Rocket Lab wins a launch contract",
+             "title_key": "s1", "url": "https://mw.com/s1", "url_hash": "hs1",
+             "source": "MarketWatch", "source_domain": "marketwatch.com",
+             "source_type": "FINVIZ", "publish_time": "2026-07-29T10:00:00Z"},
+            {"short_name": "AAPL", "title": "Apple ships a new phone",
+             "title_key": "s2", "url": "https://mw.com/s2", "url_hash": "hs2",
+             "source": "MarketWatch", "source_domain": "marketwatch.com",
+             "source_type": "FINVIZ", "publish_time": "2026-07-29T11:00:00Z"},
+        ])
+
+    def test_lists_sectors_on_the_watchlist(self, client):
+        results = client.get("/stocks/sectors").json()["results"]
+        assert {r["sector"] for r in results} == {
+            "Industrials", "Technology",                      # coarse buckets
+            "Aerospace & Defense", "Consumer Electronics",    # precise industries
+        }
+
+    def test_offers_both_levels_so_broad_and_narrow_both_work(self, client):
+        by_name = {r["sector"]: r for r in client.get("/stocks/sectors").json()["results"]}
+        assert by_name["Industrials"]["level"] == "group"
+        assert by_name["Aerospace & Defense"]["level"] == "industry"
+        assert by_name["Aerospace & Defense"]["group"] == "Industrials"
+
+    def test_unclassified_stocks_are_absent(self, client):
+        """Yahoo does not classify funds, so an ETF must not appear as a filter
+        labelled None."""
+        db.stocks.bulk_upsert_stocks([
+            {"shortName": "VUAA", "name": "Vanguard S&P 500", "type": "ETF", "currencyCode": "USD"}])
+        db.watchlist.add("VUAA")
+        results = client.get("/stocks/sectors").json()["results"]
+        assert all(r["sector"] for r in results)
+
+    def test_filter_narrows_the_feed_to_that_sector(self, client):
+        results = client.get("/news?days=365&sector=Aerospace%20%26%20Defense").json()["results"]
+        assert results and all(r["short_name"] == "6RJ0" for r in results)
+
+    def test_the_coarse_sector_name_works_too(self, client):
+        results = client.get("/news?days=365&sector=Industrials").json()["results"]
+        assert results and all(r["short_name"] == "6RJ0" for r in results)
+
+    def test_a_sector_we_hold_nothing_in_is_empty_not_everything(self, client):
+        """The dangerous failure: an unmatched filter falling through to the
+        unfiltered feed, which looks like the filter silently doing nothing."""
+        assert client.get("/news?days=365&sector=Biotechnology").json()["results"] == []
+
+
 class TestQuotes:
     def test_returns_stored_quotes(self, client):
         results = client.get("/stocks/quotes?symbols=AAPL").json()["results"]
@@ -74,7 +129,8 @@ class TestQuotes:
     def test_unknown_symbol_returns_a_placeholder_not_an_error(self, client):
         results = client.get("/stocks/quotes?symbols=NOSUCH").json()["results"]
         assert results[0] == {"symbol": "NOSUCH", "name": None, "type": None,
-                              "industry": None, "currencyCode": None, "exchange": None,
+                              "sector": None, "industry": None,
+                              "currencyCode": None, "exchange": None,
                               "yahooSymbol": None, "price": None, "change": None,
                               "changePercent": None, "priceUpdatedAt": None}
 
@@ -178,6 +234,64 @@ class TestNewsFeed:
 
     def test_limit_is_bounded(self, client):
         assert client.get("/news?limit=9999").status_code == 422
+
+    def test_search_matches_headline_text(self, client):
+        results = client.get("/news?days=365&q=antitrust").json()["results"]
+        assert [r["title"] for r in results] == ["Apple faces an antitrust probe in Europe"]
+
+    def test_search_is_not_limited_to_the_watchlist(self, client):
+        """"Return all matching articles" means the table, not the watchlist —
+        otherwise unfollowing a stock silently hides its history from search."""
+        db.news.insert_news_many([
+            {"short_name": "ZZZZ", "title": "Antitrust ruling hits an unfollowed stock",
+             "title_key": "z1", "url": "https://ft.com/z1", "url_hash": "hz1",
+             "source": "FT", "source_domain": "ft.com", "source_type": "GOOGLE_NEWS",
+             "publish_time": "2026-07-29T09:00:00Z"},
+        ])
+        symbols = {r["short_name"] for r in
+                   client.get("/news?days=365&q=antitrust").json()["results"]}
+        assert "ZZZZ" in symbols
+
+    def test_search_matches_the_ticker_too(self, client):
+        results = client.get("/news?days=365&q=6RJ0").json()["results"]
+        assert results and all(r["short_name"] == "6RJ0" for r in results)
+
+    def test_search_wildcards_are_literal(self, client):
+        """A bare % must not match everything — it is a search term, not SQL."""
+        assert client.get("/news?days=365&q=%25").json()["results"] == []
+
+    def test_search_finding_nothing_is_empty_not_the_whole_feed(self, client):
+        assert client.get("/news?days=365&q=zzzznotathing").json()["results"] == []
+
+    def test_sort_by_sentiment_ranks_the_whole_result_set(self, client):
+        scores = [r["sentiment"] for r in
+                  client.get("/news?days=365&sort=sentiment").json()["results"]]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_sort_by_symbol_groups_tickers(self, client):
+        names = [r["short_name"] for r in
+                 client.get("/news?days=365&sort=symbol").json()["results"]]
+        assert names == sorted(names)
+
+    def test_sort_by_coverage_leads_with_the_most_covered_ticker(self, client):
+        """AAPL has two stored articles to 6RJ0's one."""
+        names = [r["short_name"] for r in
+                 client.get("/news?days=365&sort=coverage").json()["results"]]
+        assert names[0] == "AAPL" and names[-1] == "6RJ0"
+
+    def test_sorted_pages_still_tile_exactly(self, client):
+        """Sentiment ties are common, so a non-total order would let page 2
+        repeat or skip rows page 1 already showed."""
+        everything = [r["id"] for r in
+                      client.get("/news?days=365&sort=sentiment&limit=50").json()["results"]]
+        paged = []
+        for offset in range(0, len(everything), 2):
+            paged += [r["id"] for r in client.get(
+                f"/news?days=365&sort=sentiment&limit=2&offset={offset}").json()["results"]]
+        assert paged == everything
+
+    def test_bad_sort_is_rejected(self, client):
+        assert client.get("/news?sort=whatever").status_code == 422
 
     def test_offset_pages_without_dropping_or_repeating(self, client):
         """The infinite-scroll river pages by offset, so consecutive pages must

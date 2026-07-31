@@ -15,10 +15,13 @@ router = APIRouter(prefix="/news", tags=["News"])
 @router.get("", response_model=NewsList)
 def feed(
     symbols: str | None = Query(None, description="Comma-separated. Defaults to the watchlist."),
+    q: str | None = Query(None, max_length=120, description="Free-text search over headlines."),
+    sector: str | None = Query(None, max_length=80, description="Sector or industry name."),
     since: str | None = Query(None, description="ISO 8601 timestamp"),
     days: int = Query(14, ge=1, le=365),
     sentiment: str | None = Query(None, pattern="^(positive|negative|neutral)$"),
     relevance: str | None = Query(None, pattern="^(direct|related)$"),
+    sort: str = Query("recent", pattern="^(recent|sentiment|coverage|symbol)$"),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -27,14 +30,37 @@ def feed(
     With no `symbols` this returns the whole watchlist's feed, which is what the
     dashboard wants and saves the client assembling the list itself.
 
-    `symbols` is not restricted to the watchlist: the quote-lookup filter hits
-    the whole news table, so a ticker you don't follow still returns whatever
-    has been stored for it. `offset` drives the infinite-scroll river — a short
-    page means the end of the data, not a transient empty.
+    `symbols` is not restricted to the watchlist: the search filter hits the
+    whole news table, so a ticker you don't follow still returns whatever has
+    been stored for it. `offset` drives the infinite-scroll river — a short page
+    means the end of the data, not a transient empty.
+
+    `q`, `sector` and `sort` all resolve in SQL. Doing any of them client-side
+    would only ever search or reorder the page already on screen, which reads as
+    a broken filter the moment the result set is larger than one page.
+
+    A `sector` naming nothing we hold returns no articles rather than silently
+    falling back to the full feed — an empty result is the honest answer to
+    "show me biotech" when nothing on the watchlist is biotech.
     """
-    wanted = parse_symbols(symbols) if symbols else db.watchlist.get_symbols()
-    if not wanted:
+    # None means "every stock we hold" downstream, which is different from an
+    # empty list ("no stocks"), so the two cases cannot be collapsed.
+    if symbols:
+        wanted = parse_symbols(symbols)
+    elif q:
+        # A free-text search is explicitly not watchlist-scoped: the user asked
+        # for matching articles, not matching articles about stocks they follow.
+        wanted = None
+    else:
+        wanted = db.watchlist.get_symbols()
+
+    if wanted is not None and not wanted:
         return NewsList(results=[])
+
+    if sector:
+        wanted = db.stocks.symbols_in_sector(sector, wanted)
+        if not wanted:
+            return NewsList(results=[])
 
     if since:
         parsed = parse_datetime(since)
@@ -49,6 +75,8 @@ def feed(
         since=since_iso,
         sentiment=sentiment,
         relevance=relevance,
+        query=q,
+        sort=sort,
         limit=limit,
         offset=offset,
     )
@@ -58,6 +86,7 @@ def feed(
 @router.get("/trending", response_model=NewsList)
 def trending(
     symbols: str | None = Query(None, description="Comma-separated. Defaults to the watchlist."),
+    sector: str | None = Query(None, max_length=80, description="Sector or industry name."),
     days: int = Query(2, ge=1, le=30),
     per_stock: int = Query(3, ge=1, le=10),
     limit: int = Query(12, ge=1, le=60),
@@ -67,10 +96,19 @@ def trending(
     "Trending" here means the market moved, not that the article was clicked —
     there is no traffic data to rank by, and the size of a 24h move is the
     honest proxy for what matters today.
+
+    Takes `sector` so the lead narrows with the rest of the page; a filter that
+    reordered the feed but left the hero showing an unrelated stock would read
+    as the filter having failed.
     """
     wanted = parse_symbols(symbols) if symbols else db.watchlist.get_symbols()
     if not wanted:
         return NewsList(results=[])
+
+    if sector:
+        wanted = db.stocks.symbols_in_sector(sector, wanted)
+        if not wanted:
+            return NewsList(results=[])
 
     rows = db.news.get_trending(
         short_names=wanted,
