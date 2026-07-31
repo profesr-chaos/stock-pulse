@@ -88,7 +88,9 @@ def trending(
     symbols: str | None = Query(None, description="Comma-separated. Defaults to the watchlist."),
     sector: str | None = Query(None, max_length=80, description="Sector or industry name."),
     days: int = Query(2, ge=1, le=30),
-    per_stock: int = Query(3, ge=1, le=10),
+    # Bounded by `limit`, not below it: filtered to one ticker the client asks
+    # for per_stock == limit, and a tighter cap here just 422s the section.
+    per_stock: int = Query(3, ge=1, le=60),
     limit: int = Query(12, ge=1, le=60),
 ):
     """The lead section: articles ordered by their stock's price move.

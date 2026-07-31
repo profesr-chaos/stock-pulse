@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { NewsArticle } from '@/types/stock';
 
-import { LATEST_SHOWN, dedupeByUrl, diversify } from './useStockNews';
+import {
+  DEFAULT_FILTER,
+  LATEST_SHOWN,
+  TRENDING_LIMIT,
+  dedupeByUrl,
+  diversify,
+  trendingQuery,
+} from './useStockNews';
 
 let nextId = 1;
 
@@ -32,6 +39,20 @@ describe('dedupeByUrl', () => {
     const other = article('TSLA', 'reuters.com');
 
     expect(dedupeByUrl([first, second, other]).map((a) => a.id)).toEqual([first.id, other.id]);
+  });
+});
+
+describe('trendingQuery', () => {
+  it('caps one ticker on the unfiltered feed', () => {
+    expect(trendingQuery(DEFAULT_FILTER).perStock).toBe(3);
+  });
+
+  it('fills the section when the reader filtered to one ticker', () => {
+    // The real failure: one article in Trending and a column of white space,
+    // while the same ticker had plenty stored.
+    const query = trendingQuery({ ...DEFAULT_FILTER, symbol: 'NVDA' });
+    expect(query.perStock).toBe(TRENDING_LIMIT);
+    expect(query.days).toBeGreaterThan(trendingQuery(DEFAULT_FILTER).days);
   });
 });
 

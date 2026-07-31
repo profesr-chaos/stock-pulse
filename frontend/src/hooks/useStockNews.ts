@@ -69,22 +69,33 @@ export const dedupeByUrl = (articles: NewsArticle[]): NewsArticle[] => {
   return kept;
 };
 
+export const TRENDING_LIMIT = 12;
+
+/**
+ * Trending's defaults are tuned for the unfiltered feed, and both starve it
+ * once the reader picks a ticker.
+ *
+ * `perStock: 3` exists to stop one heavily-covered name owning the section —
+ * but filtered to that one name it *is* the section, so the cap becomes the
+ * only thing keeping the column short. `days: 2` is the same story: across the
+ * whole watchlist two days is plenty of material, for a single ticker it can be
+ * one article and a lot of white space. Filtered, fill the section first;
+ * Latest below is free to repeat anything that lands in both.
+ */
+export const trendingQuery = (filter: FeedFilter) => ({
+  symbols: asSymbols(filter),
+  sector: filter.sector ?? undefined,
+  days: filter.symbol ? 14 : 2,
+  perStock: filter.symbol ? TRENDING_LIMIT : 3,
+  limit: TRENDING_LIMIT,
+});
+
 /** Lead section: ranked by how far the stock moved. */
 export const useTrendingNews = (filter: FeedFilter = DEFAULT_FILTER) =>
   useQuery({
     queryKey: ['news', 'trending', filter.symbol, filter.sector],
     queryFn: ({ signal }) =>
-      getTrendingNews(
-        {
-          symbols: asSymbols(filter),
-          sector: filter.sector ?? undefined,
-          days: 2,
-          perStock: 3,
-          limit: 12,
-        },
-        signal,
-        bootable(filter, 'trending'),
-      ),
+      getTrendingNews(trendingQuery(filter), signal, bootable(filter, 'trending')),
     select: dedupeByUrl,
     // Not keyed on sort: this section's order *is* the price move, which is
     // what the heading promises. Nor on query — a search hides it entirely.

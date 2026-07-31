@@ -423,6 +423,13 @@ class TestTrendingNews:
         results = client.get("/news/trending?days=30&symbols=AAPL").json()["results"]
         assert {r["short_name"] for r in results} == {"AAPL"}
 
+    def test_one_ticker_may_fill_the_whole_section(self, client):
+        """Filtered to a single ticker the client sends per_stock == limit, so a
+        lower ceiling here 422s the section into an empty column."""
+        response = client.get("/news/trending?days=30&symbols=AAPL&per_stock=12&limit=12")
+        assert response.status_code == 200
+        assert len(response.json()["results"]) == 5
+
     def test_empty_watchlist_yields_nothing(self, client):
         for symbol in list(db.watchlist.get_symbols()):
             db.watchlist.remove(symbol)
