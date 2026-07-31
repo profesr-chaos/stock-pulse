@@ -1,0 +1,6 @@
+.vscode/
+.claude/settings.local.json
+
+# ponytail: transitional — pre-monorepo frontend checkout, still locked by an open
+# editor at migration time. Delete this line once it's moved to ..\stocky-legacy\.
+stocky-frontend/
