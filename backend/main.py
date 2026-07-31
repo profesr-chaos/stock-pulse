@@ -23,6 +23,7 @@ from routes.news import router as news_router
 from routes.stocks import router as stocks_router
 from routes.system import router as system_router
 from routes.watchlist import router as watchlist_router
+from routes.ws import router as ws_router
 
 
 @asynccontextmanager
@@ -59,6 +60,7 @@ app.include_router(stocks_router)
 app.include_router(news_router)
 app.include_router(watchlist_router)
 app.include_router(insights_router)
+app.include_router(ws_router)
 
 
 if __name__ == "__main__":
