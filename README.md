@@ -8,7 +8,7 @@ Two apps, one repo. They share no build tooling; they only meet over HTTP.
 
 | Path | What it is | Runs on |
 |---|---|---|
-| [`backend/`](backend/) | FastAPI + SQLite. Scrapes, deduplicates, scores, serves. | `127.0.0.1:5000` |
+| [`backend/`](backend/) | FastAPI + Postgres. Scrapes, deduplicates, scores, serves. | `127.0.0.1:5000` |
 | [`frontend/`](frontend/) | Vite + React + TypeScript. One screen, no router. | `127.0.0.1:3000` |
 
 Each has its own README with the detail that matters for working in it.

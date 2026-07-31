@@ -7,6 +7,7 @@ in the DB).
 """
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -34,8 +35,17 @@ def _float(name: str, default: float) -> float:
 
 
 # ── Storage ──────────────────────────────────────────────────────────────
-# A directory, not a bare file: WAL mode writes sibling -wal/-shm files.
-DB_PATH = Path(os.getenv("STOCKY_DB") or ROOT / "data" / "stocky.db")
+# Postgres. The default assumes a local server with trust auth, which is what
+# `scoop install postgresql` gives you; docker-compose overrides it.
+DB_DSN = os.getenv("STOCKY_DB_DSN") or "postgresql://postgres@localhost:5432/stocky"
+# Enough for the API's request handlers plus the scraper's worker threads.
+DB_POOL_SIZE = _int("STOCKY_DB_POOL_SIZE", 10)
+
+
+def db_label() -> str:
+    """host/dbname for /health — never the password."""
+    parts = urlsplit(DB_DSN)
+    return f"{parts.hostname or 'localhost'}/{parts.path.lstrip('/') or '?'}"
 
 # ── API ──────────────────────────────────────────────────────────────────
 # Loopback only. This is a personal tool with no auth; it must not be

@@ -78,10 +78,14 @@ Verify what landed by source rather than trusting the counts:
 
 ```bash
 cd backend && .venv/Scripts/python.exe -c "
-import sqlite3; c=sqlite3.connect('data/stocky.db')
-for r in c.execute(\"SELECT source_type, COUNT(*) FROM news WHERE created_at > datetime('now','-1 day') GROUP BY 1 ORDER BY 2 DESC\"): print(r)
+import db
+with db.get_connection() as c:
+    for r in c.execute(\"SELECT source_type, COUNT(*) FROM news WHERE created_at > to_char(now() - interval '1 day', 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS\\\"Z\\\"') GROUP BY 1 ORDER BY 2 DESC\"): print(r)
 "
 ```
+
+Needs Postgres up. `pg_isready` first — a dead server is the most likely reason
+the API starts fine and every endpoint then 500s.
 
 ## Screenshot the UI
 

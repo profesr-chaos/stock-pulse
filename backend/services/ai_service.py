@@ -8,6 +8,7 @@ generated on request rather than for every article on a schedule.
 from __future__ import annotations
 
 import threading
+from uuid import UUID
 
 import db
 import settings
@@ -79,7 +80,7 @@ def _complete(system: str, user: str, max_tokens: int) -> dict | None:
 
 # ── Single article ───────────────────────────────────────────────────────
 
-def summarise_article(news_id: int) -> dict | None:
+def summarise_article(news_id: UUID) -> dict | None:
     """Summarise one article, caching the result on its row."""
     if not available():
         return None

@@ -1,5 +1,5 @@
-"""Storage behaviour, migration, and the uniqueness rules that decide whether
-articles survive.
+"""Storage behaviour, the SQLite import, and the uniqueness rules that decide
+whether articles survive.
 
 The cross-stock test is the one that matters most: the previous build had a
 global fuzzy duplicate check that made one stock's headline permanently block
@@ -9,12 +9,15 @@ every other stock's near-identical one, which is why the whole database held
 from __future__ import annotations
 
 import sqlite3
+from uuid import UUID
 
 import pytest
 
 import db
-import settings
+import import_sqlite
 from normalize import days_ago_iso, now_iso
+
+_TABLES = "SELECT tablename AS name FROM pg_tables WHERE schemaname = 'public'"
 
 
 def news_row(**overrides) -> dict:
@@ -37,15 +40,13 @@ def news_row(**overrides) -> dict:
 class TestSchema:
     def test_tables_are_created(self, temp_db):
         with db.get_connection() as conn:
-            tables = {r["name"] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {r["name"] for r in conn.execute(_TABLES)}
         assert {"stocks", "news", "prices", "watchlist",
                 "stock_sentiment_history", "stock_ai_summaries"} <= tables
 
     def test_auth_tables_are_gone(self, temp_db):
         with db.get_connection() as conn:
-            tables = {r["name"] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {r["name"] for r in conn.execute(_TABLES)}
         assert not ({"users", "user_stocks", "user_industries"} & tables)
 
     def test_migration_is_idempotent(self, temp_db):
@@ -53,59 +54,22 @@ class TestSchema:
         db.create_tables()
         assert db.stocks.count_stocks() == 0
 
-    def test_wal_is_enabled(self, temp_db):
-        with db.get_connection() as conn:
-            assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    def test_ids_are_uuid_v7_and_sort_in_insertion_order(self, temp_db):
+        """v7, not v4 — the timestamp lives in the leading bytes, so ids sort
+        chronologically and `ORDER BY id DESC` stays a meaningful tiebreaker.
+        A v4 id would satisfy "is a UUID" and shuffle this ordering.
+        """
+        ids = [db.news.insert_news_many([news_row(url_hash=f"h{i}")])[0] for i in range(6)]
+        assert all(i.version == 7 for i in ids), [i.version for i in ids]
+        assert ids == sorted(ids), "v7 ids must be monotonic across inserts"
 
-    def test_legacy_columns_and_rows_migrate(self, tmp_path, monkeypatch):
-        """A pre-rewrite DB must upgrade in place, keeping its data."""
-        path = tmp_path / "legacy.db"
-        monkeypatch.setattr(settings, "DB_PATH", path)
-        monkeypatch.setattr(db.connection, "_initialised", False)
-
-        legacy = sqlite3.connect(path)
-        legacy.executescript("""
-            CREATE TABLE stocks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT,
-                short_name TEXT NOT NULL, name TEXT NOT NULL, currency_code TEXT,
-                type TEXT NOT NULL, industry TEXT, price REAL, price_change REAL,
-                price_change_percent REAL, in_free_tier INTEGER DEFAULT 0,
-                in_use INTEGER DEFAULT 0);
-            CREATE TABLE news (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT,
-                short_name TEXT NOT NULL, source TEXT NOT NULL, source_url TEXT,
-                source_country TEXT, source_type TEXT NOT NULL, lang TEXT,
-                publish_time TEXT NOT NULL, url TEXT NOT NULL, image TEXT,
-                title TEXT NOT NULL, description TEXT, sentiment REAL, AI_summary TEXT);
-            CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
-            CREATE TABLE user_stocks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT,
-                user_id INTEGER, short_name TEXT, position INTEGER DEFAULT 0);
-            INSERT INTO stocks (short_name, name, type, currency_code)
-                VALUES ('AAPL','Apple','STOCK','USD');
-            INSERT INTO news (short_name, source, source_type, publish_time, url, title)
-                VALUES ('AAPL','investors.com','RSS',
-                        'Wed, 28 Jan 2026 22:07:57 +0000',
-                        'https://investors.com/a','Dow Jones Futures Rise As Meta Jumps');
-            INSERT INTO user_stocks (user_id, short_name, position) VALUES (1,'AAPL',0);
-            INSERT INTO user_stocks (user_id, short_name, position) VALUES (2,'AAPL',3);
-        """)
-        legacy.commit()
-        legacy.close()
-
-        db.create_tables()
-
-        assert db.stocks.count_stocks() == 1
-        # The watchlist is de-duplicated across the old per-user rows.
-        assert db.watchlist.get_symbols() == ["AAPL"]
-        # RFC-822 dates are rewritten to the canonical form.
-        assert db.news.get_news(["AAPL"])[0]["publish_time"] == "2026-01-28T22:07:57Z"
-        # Derived keys are populated for rows that predate them.
-        assert db.news.get_news(["AAPL"])[0]["url_hash"]
-        with db.get_connection() as conn:
-            tables = {r["name"] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
-        assert "users" not in tables and "user_stocks" not in tables
+    def test_search_is_case_insensitive(self, temp_db):
+        """SQLite's LIKE ignored ASCII case and Postgres' does not, so the
+        port had to switch to ILIKE or every search would have gone quiet."""
+        db.stocks.bulk_upsert_stocks([
+            {"shortName": "TSLA", "name": "Tesla Inc", "type": "STOCK", "currencyCode": "USD"}])
+        assert [s["short_name"] for s in db.stocks.search_stocks("tesla")] == ["TSLA"]
+        assert [s["short_name"] for s in db.stocks.search_stocks("tsla")] == ["TSLA"]
 
 
 class TestNewsUniqueness:
@@ -137,6 +101,12 @@ class TestNewsUniqueness:
 
     def test_empty_batch_is_safe(self, temp_db):
         assert db.news.insert_news_many([]) == []
+
+    def test_a_batch_past_the_bind_parameter_ceiling_still_stores(self, temp_db):
+        """Postgres caps a statement at 65535 bind parameters — 4095 rows at 16
+        columns — so a long backfill of a well-covered ticker has to chunk."""
+        batch = [news_row(url_hash=f"h{i}", url=f"https://x.com/{i}") for i in range(4500)]
+        assert len(db.news.insert_news_many(batch)) == 4500
 
 
 class TestNewsQueries:
@@ -192,6 +162,27 @@ class TestNewsQueries:
     def test_source_breakdown(self, seeded):
         rows = db.news.source_breakdown(["AAPL"], since="2026-07-01")
         assert rows[0]["source"] == "reuters.com" and rows[0]["article_count"] == 4
+
+    def test_sources_on_an_equal_count_come_back_in_a_stable_order(self, temp_db):
+        """No unique tiebreaker means Postgres is free to reorder ties between
+        two identical queries — the list would shuffle on every poll."""
+        db.news.insert_news_many([
+            news_row(url_hash="a", source_domain="zzz.com"),
+            news_row(url_hash="b", source_domain="aaa.com"),
+        ])
+        first = [r["source"] for r in db.news.source_breakdown(["AAPL"], since="2026-07-01")]
+        assert first == ["aaa.com", "zzz.com"]
+        assert first == [r["source"] for r in db.news.source_breakdown(["AAPL"], since="2026-07-01")]
+
+    def test_image_targets_on_an_equal_timestamp_are_stable(self, temp_db):
+        db.news.insert_news_many([
+            news_row(url_hash=f"h{i}", url=f"https://reuters.com/{i}",
+                     publish_time="2026-07-29T10:00:00Z")
+            for i in range(5)
+        ])
+        picked = [r["id"] for r in db.news.get_missing_images(["AAPL"], limit=3)]
+        assert picked == sorted(picked, reverse=True)
+        assert picked == [r["id"] for r in db.news.get_missing_images(["AAPL"], limit=3)]
 
     def test_fingerprints_expose_what_is_already_stored(self, temp_db):
         db.news.insert_news_many([news_row(publish_time=now_iso(), image="https://i/x.jpg")])
@@ -394,59 +385,130 @@ class TestSummaries:
         assert db.summaries.latest_summary("AAPL") is None
 
 
-class TestConsentUrlRepair:
-    """The previous scraper followed each Google redirect to "resolve" it and
-    landed on Google's cookie-consent interstitial, saving that as the article
-    URL. Those links open a cookie prompt instead of the story."""
+class TestSqliteImport:
+    """The one-way move off SQLite. Only run once for real, so it has to be
+    right the first time: a lost row here is a lost row forever."""
 
-    def _insert_raw(self, url: str, url_hash_value: str) -> None:
-        with db.get_connection() as conn:
-            conn.execute("""
-                INSERT INTO news (short_name, source, source_type, publish_time,
-                                  url, url_hash, title, title_key)
-                VALUES ('AAPL', 'Reuters', 'SCRAPE', '2026-07-29T10:00:00Z', ?, ?,
-                        'Apple beats Q3 estimates on iPhone demand', 'k1')
-            """, (url, url_hash_value))
+    @pytest.fixture
+    def legacy_db(self, tmp_path):
+        path = tmp_path / "stocky.db"
+        old = sqlite3.connect(path)
+        old.executescript("""
+            CREATE TABLE stocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT,
+                short_name TEXT, name TEXT, currency_code TEXT, type TEXT,
+                sector TEXT, industry TEXT, yahoo_symbol TEXT, exchange TEXT,
+                quote_currency TEXT, resolved_at TEXT, price REAL,
+                price_change REAL, price_change_percent REAL, price_updated_at TEXT);
+            CREATE TABLE news (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT,
+                short_name TEXT, source TEXT, source_url TEXT, source_domain TEXT,
+                source_country TEXT, source_type TEXT, lang TEXT, publish_time TEXT,
+                url TEXT, url_hash TEXT, image TEXT, title TEXT, title_key TEXT,
+                description TEXT, sentiment REAL, ai_summary TEXT, relevance TEXT);
+            CREATE TABLE prices (short_name TEXT, ts TEXT, close REAL, interval TEXT);
+            CREATE TABLE watchlist (
+                short_name TEXT, created_at TEXT, position INTEGER, backfilled_at TEXT);
+            CREATE TABLE stock_sentiment_history (
+                short_name TEXT, date TEXT, avg_sentiment REAL, article_count INTEGER,
+                positive_count INTEGER, negative_count INTEGER, neutral_count INTEGER,
+                created_at TEXT);
+            CREATE TABLE stock_ai_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, short_name TEXT,
+                ai_summary TEXT, tokens_total INTEGER, days INTEGER, article_count INTEGER);
 
-    def test_consent_wrapper_is_unwrapped_to_the_real_url(self, temp_db):
-        self._insert_raw(
-            "https://consent.google.com/ml?continue=https://news.google.com/rss/articles/CBMiABC",
-            "old-hash",
-        )
-        db.create_tables()
-        article = db.news.get_news(["AAPL"], since="2020-01-01T00:00:00Z")[0]
-        assert article["url"] == "https://news.google.com/rss/articles/CBMiABC"
-        assert article["source_domain"] == "news.google.com"
+            INSERT INTO stocks (id, created_at, short_name, name, type, currency_code, price)
+                VALUES (7, '2026-01-01T00:00:00Z', 'AAPL', 'Apple', 'STOCK', 'USD', 338.19);
+            INSERT INTO news (id, created_at, short_name, source, source_domain,
+                              source_type, publish_time, url, url_hash, title,
+                              title_key, sentiment, relevance)
+                VALUES (42, '2026-01-01T00:00:00Z', 'AAPL', 'Reuters', 'reuters.com',
+                        'RSS', '2026-07-29T10:00:00Z', 'https://reuters.com/a', 'h1',
+                        'Apple beats estimates', 'apple beats estimates', 0.8, 'direct');
+            INSERT INTO prices VALUES ('AAPL', '2026-07-29T00:00:00Z', 338.19, '1d');
+            INSERT INTO watchlist VALUES ('AAPL', '2026-01-01T00:00:00Z', 0, NULL);
+            INSERT INTO stock_sentiment_history
+                VALUES ('AAPL', '2026-07-29', 0.8, 1, 1, 0, 0, '2026-01-01T00:00:00Z');
+            INSERT INTO stock_ai_summaries (id, created_at, short_name, ai_summary,
+                                            tokens_total, days, article_count)
+                VALUES (3, '2026-01-01T00:00:00Z', 'AAPL', 'good quarter', 10, 7, 1);
+        """)
+        old.commit()
+        old.close()
+        return path
 
-    def test_url_hash_is_recomputed_so_dedup_still_works(self, temp_db):
-        self._insert_raw(
-            "https://consent.google.com/ml?continue=https://reuters.com/tech/apple",
-            "old-hash",
-        )
-        db.create_tables()
-        article = db.news.get_news(["AAPL"], since="2020-01-01T00:00:00Z")[0]
-        from normalize import url_hash
-        assert article["url_hash"] == url_hash("https://reuters.com/tech/apple")
+    def test_every_table_comes_across(self, temp_db, legacy_db):
+        counts = import_sqlite.import_from(legacy_db)
+        assert counts == {"stocks": 1, "news": 1, "prices": 1, "watchlist": 1,
+                          "stock_sentiment_history": 1, "stock_ai_summaries": 1}
+        assert db.stocks.get_stock("AAPL")["price"] == 338.19
+        assert db.news.get_news(["AAPL"])[0]["title"] == "Apple beats estimates"
+        assert db.prices.latest("AAPL")["close"] == 338.19
+        assert db.watchlist.get_symbols() == ["AAPL"]
+        assert db.sentiment.get_history("AAPL", days=100000)[0]["article_count"] == 1
+        assert db.summaries.latest_summary("AAPL")["ai_summary"] == "good quarter"
 
-    def test_percent_encoded_targets_are_decoded(self, temp_db):
-        self._insert_raw(
-            "https://consent.google.com/ml?continue=https%3A%2F%2Freuters.com%2Ftech%2Fapple",
-            "old-hash",
-        )
-        db.create_tables()
-        assert db.news.get_news(["AAPL"], since="2020-01-01T00:00:00Z")[0]["url"] == \
-            "https://reuters.com/tech/apple"
+    def test_rows_get_fresh_uuids_rather_than_the_old_integer_ids(self, temp_db, legacy_db):
+        """The old ids were 32-bit integers; there is nothing to carry into a
+        UUID column, so every row takes a fresh one from the default."""
+        import_sqlite.import_from(legacy_db)
+        new_id = db.news.get_news(["AAPL"])[0]["id"]
+        assert isinstance(new_id, UUID) and new_id.version == 7
+        assert db.news.get_news_by_id(new_id)["title"] == "Apple beats estimates"
 
-    def test_a_wrapper_with_no_target_is_dropped_not_kept_broken(self, temp_db):
-        self._insert_raw("https://consent.google.com/ml?hl=en", "old-hash")
-        db.create_tables()
-        assert db.news.get_news(["AAPL"], since="2020-01-01T00:00:00Z") == []
+    def test_a_second_import_refuses_rather_than_duplicating(self, temp_db, legacy_db):
+        import_sqlite.import_from(legacy_db)
+        with pytest.raises(SystemExit):
+            import_sqlite.import_from(legacy_db)
 
-    def test_repair_is_idempotent(self, temp_db):
-        self._insert_raw(
-            "https://consent.google.com/ml?continue=https://reuters.com/tech/apple",
-            "old-hash",
-        )
-        db.create_tables()
-        db.create_tables()
-        assert len(db.news.get_news(["AAPL"], since="2020-01-01T00:00:00Z")) == 1
+    def test_columns_that_kept_legacy_capitals_still_come_across(self, tmp_path, temp_db):
+        """The real database declared `news.AI_summary`, not `ai_summary`.
+
+        SQLite resolves column names case-insensitively, so every query worked
+        and nobody noticed. A case-sensitive column match here skips the column
+        without a word and drops every stored summary.
+        """
+        path = tmp_path / "capitals.db"
+        old = sqlite3.connect(path)
+        old.executescript("""
+            CREATE TABLE stocks (id INTEGER PRIMARY KEY, short_name TEXT, name TEXT, type TEXT);
+            CREATE TABLE news (id INTEGER PRIMARY KEY, short_name TEXT, source TEXT,
+                               source_type TEXT, publish_time TEXT, url TEXT,
+                               url_hash TEXT, title TEXT, AI_summary TEXT);
+            CREATE TABLE prices (short_name TEXT, ts TEXT, close REAL, interval TEXT);
+            CREATE TABLE watchlist (short_name TEXT, position INTEGER);
+            CREATE TABLE stock_sentiment_history (short_name TEXT, date TEXT);
+            CREATE TABLE stock_ai_summaries (id INTEGER PRIMARY KEY, short_name TEXT,
+                                             ai_summary TEXT);
+            INSERT INTO news (id, short_name, source, source_type, publish_time, url,
+                              url_hash, title, AI_summary)
+                VALUES (1, 'AAPL', 'Reuters', 'RSS', '2026-07-29T10:00:00Z',
+                        'https://reuters.com/a', 'h1', 'Apple beats', 'a cached summary');
+        """)
+        old.commit()
+        old.close()
+
+        import_sqlite.import_from(path)
+        assert db.news.get_news(["AAPL"])[0]["ai_summary"] == "a cached summary"
+
+    def test_a_database_missing_a_newer_column_still_imports(self, tmp_path, temp_db):
+        """A .db taken before `sector` existed must not blow up on it."""
+        path = tmp_path / "older.db"
+        old = sqlite3.connect(path)
+        old.executescript("""
+            CREATE TABLE stocks (id INTEGER PRIMARY KEY, short_name TEXT,
+                                 name TEXT, type TEXT);
+            CREATE TABLE news (id INTEGER PRIMARY KEY, short_name TEXT, source TEXT,
+                               source_type TEXT, publish_time TEXT, url TEXT, title TEXT);
+            CREATE TABLE prices (short_name TEXT, ts TEXT, close REAL, interval TEXT);
+            CREATE TABLE watchlist (short_name TEXT, position INTEGER);
+            CREATE TABLE stock_sentiment_history (short_name TEXT, date TEXT);
+            CREATE TABLE stock_ai_summaries (id INTEGER PRIMARY KEY, short_name TEXT,
+                                             ai_summary TEXT);
+            INSERT INTO stocks VALUES (1, 'AAPL', 'Apple', 'STOCK');
+        """)
+        old.commit()
+        old.close()
+
+        import_sqlite.import_from(path)
+        assert db.stocks.get_stock("AAPL")["sector"] is None

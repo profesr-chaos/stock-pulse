@@ -5,6 +5,7 @@ One place for the wire format, so a column rename can't silently change the API.
 from __future__ import annotations
 
 from typing import Optional
+from uuid import UUID
 
 from fastapi import HTTPException, Query
 from pydantic import BaseModel
@@ -49,7 +50,7 @@ class SectorList(BaseModel):
 
 
 class NewsArticle(BaseModel):
-    id: int
+    id: UUID
     short_name: str
     title: str
     url: str
@@ -106,7 +107,7 @@ class Mover(BaseModel):
 
 
 class AiSummary(BaseModel):
-    id: Optional[int] = None
+    id: Optional[UUID] = None
     symbol: Optional[str] = None
     ai_summary: str
     cached: bool = False

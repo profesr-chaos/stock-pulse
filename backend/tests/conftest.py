@@ -1,11 +1,16 @@
 """Shared fixtures.
 
-Every test runs against a throwaway SQLite file and never touches the network:
-anything that would scrape is patched at the seam. That keeps the suite fast and
-means a failing test is a real bug, not a flaky third party.
+Every test runs against a throwaway Postgres schema and never touches the
+network: anything that would scrape is patched at the seam. That keeps the suite
+fast and means a failing test is a real bug, not a flaky third party.
+
+The suite needs a running Postgres. Point STOCKY_TEST_DSN at it if the default
+below is wrong; the database it names is wiped between tests, so never aim it at
+the real one.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -15,16 +20,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db  # noqa: E402
 import settings  # noqa: E402
-from db import connection  # noqa: E402
+
+TEST_DSN = os.getenv("STOCKY_TEST_DSN") or "postgresql://postgres@localhost:5432/stocky_test"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _point_at_the_test_database():
+    """Session-wide, and before anything can open a pool against the real DSN."""
+    settings.DB_DSN = TEST_DSN
+    yield
 
 
 @pytest.fixture
-def temp_db(tmp_path, monkeypatch):
-    """A fresh, migrated database for one test."""
-    monkeypatch.setattr(settings, "DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(connection, "_initialised", False)
+def temp_db():
+    """An empty database for one test.
+
+    TRUNCATE rather than drop-and-recreate: the schema is identical every time,
+    so recreating it per test would just pay DDL cost ~200 times over. RESTART
+    IDENTITY keeps row ids predictable across tests.
+    """
     db.create_tables()
-    return tmp_path / "test.db"
+    with db.get_connection() as conn:
+        conn.execute(
+            "TRUNCATE stocks, news, prices, watchlist,"
+            " stock_sentiment_history, stock_ai_summaries RESTART IDENTITY"
+        )
+    return TEST_DSN
 
 
 @pytest.fixture

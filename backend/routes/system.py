@@ -26,7 +26,7 @@ def health():
 
     return {
         "ok": True,
-        "database": str(settings.DB_PATH),
+        "database": settings.db_label(),
         "instruments": db.stocks.count_stocks(),
         "watchlist": watched,
         "articles_last_24h": sum(r["article_count"] for r in recent),

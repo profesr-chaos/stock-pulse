@@ -1,6 +1,8 @@
 """The news feed."""
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, HTTPException, Query
 
 import db
@@ -143,7 +145,7 @@ def sources(symbols: str | None = Query(None), days: int = Query(14, ge=1, le=90
 
 
 @router.get("/{news_id}", response_model=NewsArticle)
-def article(news_id: int):
+def article(news_id: UUID):
     row = db.news.get_news_by_id(news_id)
     if not row:
         raise HTTPException(status_code=404, detail="Article not found")
@@ -151,7 +153,7 @@ def article(news_id: int):
 
 
 @router.post("/{news_id}/ai-summary", response_model=AiSummary)
-def article_ai_summary(news_id: int):
+def article_ai_summary(news_id: UUID):
     """Summarise one article. POST because it can spend tokens."""
     if not ai_service.available():
         raise HTTPException(status_code=503, detail="AI summaries need a DSEEK API key")

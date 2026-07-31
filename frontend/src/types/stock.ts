@@ -23,7 +23,8 @@ export interface Stock {
 export type Relevance = 'direct' | 'related';
 
 export interface NewsArticle {
-  id: number;
+  /** UUIDv7 — time-ordered, so it sorts chronologically as well as uniquely. */
+  id: string;
   short_name: string;
   title: string;
   url: string;
