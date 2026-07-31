@@ -101,12 +101,17 @@ def get_news(
     sentiment: str | None = None,
     relevance: str | None = None,
     limit: int = 200,
+    offset: int = 0,
 ) -> list[dict]:
     """Feed query. `sentiment` is one of positive/negative/neutral.
 
     `short_names=None` means "every stock"; an *empty list* means "no stocks"
     and returns nothing. Treating the two the same would turn a request for an
     empty watchlist into a dump of the entire table.
+
+    `offset` paginates the infinite-scroll river. The ORDER BY is total
+    (publish_time, id) so a page boundary can't drop or repeat an article the
+    way a non-deterministic sort would.
     """
     if short_names is not None and not short_names:
         return []
@@ -132,13 +137,56 @@ def get_news(
     elif sentiment == "neutral":
         where.append("(sentiment IS NULL OR sentiment BETWEEN -0.2 AND 0.2)")
 
-    params.append(limit)
+    params += [limit, offset]
     with get_connection() as conn:
         return rows(conn.execute(
             f"SELECT * FROM news WHERE {' AND '.join(where)} "
-            f"ORDER BY publish_time DESC, id DESC LIMIT ?",
+            f"ORDER BY publish_time DESC, id DESC LIMIT ? OFFSET ?",
             params,
         ))
+
+
+def get_trending(
+    short_names: list[str] | None = None,
+    since: str | None = None,
+    per_stock: int = 3,
+    limit: int = 12,
+) -> list[dict]:
+    """Articles ranked by how far their stock has moved, biggest movers first.
+
+    `per_stock` caps how many articles one ticker contributes, or a single
+    stock with heavy coverage would fill the whole section on its own. Stocks
+    with no quote yet are excluded — they have no move to rank by.
+    """
+    if short_names is not None and not short_names:
+        return []
+
+    where, params = ["s.price_change_percent IS NOT NULL"], []
+    if short_names:
+        where.append(f"n.short_name IN ({','.join('?' * len(short_names))})")
+        params += short_names
+    if since:
+        where.append("n.publish_time >= ?")
+        params.append(since)
+
+    with get_connection() as conn:
+        return rows(conn.execute(f"""
+            WITH ranked AS (
+                SELECT n.*,
+                       s.price_change_percent AS move_percent,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY n.short_name
+                           ORDER BY n.publish_time DESC, n.id DESC
+                       ) AS rn
+                FROM news n
+                JOIN stocks s ON s.short_name = n.short_name
+                WHERE {' AND '.join(where)}
+            )
+            SELECT * FROM ranked
+            WHERE rn <= ?
+            ORDER BY ABS(move_percent) DESC, publish_time DESC, id DESC
+            LIMIT ?
+        """, [*params, per_stock, limit]))
 
 
 def get_recent_fingerprints(short_name: str, days: int = 7) -> list[dict]:

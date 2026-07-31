@@ -179,6 +179,38 @@ class TestNewsFeed:
     def test_limit_is_bounded(self, client):
         assert client.get("/news?limit=9999").status_code == 422
 
+    def test_offset_pages_without_dropping_or_repeating(self, client):
+        """The infinite-scroll river pages by offset, so consecutive pages must
+        tile the feed exactly — no gap, no duplicate at the boundary."""
+        whole = client.get("/news?days=365").json()["results"]
+        assert len(whole) == 3
+
+        pages = []
+        for offset in (0, 2):
+            pages += client.get(f"/news?days=365&limit=2&offset={offset}").json()["results"]
+
+        assert [a["id"] for a in pages] == [a["id"] for a in whole]
+
+    def test_offset_past_the_end_is_empty_not_an_error(self, client):
+        assert client.get("/news?days=365&offset=500").json()["results"] == []
+
+    def test_negative_offset_is_rejected(self, client):
+        assert client.get("/news?offset=-1").status_code == 422
+
+    def test_symbol_filter_is_not_limited_to_the_watchlist(self, client):
+        """The quote-lookup filter queries the whole news table. TSLA is in the
+        catalogue but unfollowed; its stored article must still come back."""
+        db.news.insert_news_many([{
+            "short_name": "TSLA", "title": "Tesla opens a new gigafactory in Texas",
+            "title_key": "kt", "url": "https://reuters.com/t", "url_hash": "ht",
+            "source": "Reuters", "source_domain": "reuters.com",
+            "source_type": "GOOGLE_NEWS", "publish_time": "2026-07-29T09:00:00Z",
+            "relevance": "direct",
+        }])
+        assert "TSLA" not in db.watchlist.get_symbols()
+        results = client.get("/news?symbols=TSLA&days=365").json()["results"]
+        assert [r["short_name"] for r in results] == ["TSLA"]
+
     def test_articles_carry_the_fields_the_ui_needs(self, client):
         article = client.get("/news?days=365").json()["results"][0]
         for field in ("id", "title", "url", "publish_time", "source", "source_domain",
@@ -213,6 +245,77 @@ class TestNewsFeed:
         db.watchlist.remove("AAPL")
         db.watchlist.remove("6RJ0")
         assert client.get("/news?days=365").json()["results"] == []
+
+
+class TestTrendingNews:
+    """The lead section: articles ordered by their stock's price move."""
+
+    @pytest.fixture(autouse=True)
+    def seed(self, client):
+        db.watchlist.add("TSLA")
+        db.stocks.bulk_set_quotes([
+            # AAPL is already priced at -0.556% by the stocked_db fixture.
+            {"short_name": "TSLA", "price": 210.0, "change": 18.0,
+             "change_percent": 9.4, "currency": "USD"},
+        ])
+        db.news.insert_news_many([
+            {"short_name": "AAPL", "title": f"Apple story {i}", "title_key": f"a{i}",
+             "url": f"https://reuters.com/a{i}", "url_hash": f"ha{i}", "source": "Reuters",
+             "source_domain": "reuters.com", "source_type": "GOOGLE_NEWS",
+             "publish_time": f"2026-07-3{i}T10:00:00Z", "relevance": "direct"}
+            for i in range(5)
+        ] + [
+            {"short_name": "TSLA", "title": "Tesla surges on delivery beat", "title_key": "t1",
+             "url": "https://reuters.com/t1", "url_hash": "ht1", "source": "Reuters",
+             "source_domain": "reuters.com", "source_type": "GOOGLE_NEWS",
+             "publish_time": "2026-07-30T10:00:00Z", "relevance": "direct"},
+            # 6RJ0 is followed but has no quote, so it has no move to rank by.
+            {"short_name": "6RJ0", "title": "Rocket Lab wins a launch contract",
+             "title_key": "r1", "url": "https://reuters.com/r1", "url_hash": "hr1",
+             "source": "Reuters", "source_domain": "reuters.com",
+             "source_type": "GOOGLE_NEWS", "publish_time": "2026-07-30T11:00:00Z",
+             "relevance": "direct"},
+        ])
+
+    def test_biggest_mover_leads(self, client):
+        results = client.get("/news/trending?days=30").json()["results"]
+        assert results[0]["short_name"] == "TSLA"
+
+    def test_move_percent_is_reported(self, client):
+        results = client.get("/news/trending?days=30").json()["results"]
+        assert results[0]["movePercent"] == 9.4
+
+    def test_a_big_faller_outranks_a_small_riser(self, client):
+        """Ranking is by the size of the move, not its direction — a crash is
+        as newsworthy as a rally."""
+        db.stocks.bulk_set_quotes([
+            {"short_name": "TSLA", "price": 190.0, "change": -2.0,
+             "change_percent": -1.0, "currency": "USD"},
+            {"short_name": "AAPL", "price": 338.0, "change": 0.5,
+             "change_percent": 0.2, "currency": "USD"},
+        ])
+        results = client.get("/news/trending?days=30").json()["results"]
+        assert results[0]["short_name"] == "TSLA"
+
+    def test_one_stock_cannot_fill_the_section(self, client):
+        results = client.get("/news/trending?days=30&per_stock=2").json()["results"]
+        assert sum(1 for r in results if r["short_name"] == "AAPL") == 2
+
+    def test_unpriced_stocks_are_excluded(self, client):
+        results = client.get("/news/trending?days=30").json()["results"]
+        assert "6RJ0" not in {r["short_name"] for r in results}
+
+    def test_symbol_filter_applies(self, client):
+        results = client.get("/news/trending?days=30&symbols=AAPL").json()["results"]
+        assert {r["short_name"] for r in results} == {"AAPL"}
+
+    def test_empty_watchlist_yields_nothing(self, client):
+        for symbol in list(db.watchlist.get_symbols()):
+            db.watchlist.remove(symbol)
+        assert client.get("/news/trending?days=30").json()["results"] == []
+
+    def test_trending_is_not_read_as_an_article_id(self, client):
+        assert client.get("/news/trending").status_code == 200
 
 
 class TestWatchlistRoutes:

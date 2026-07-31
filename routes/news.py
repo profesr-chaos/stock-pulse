@@ -20,11 +20,17 @@ def feed(
     sentiment: str | None = Query(None, pattern="^(positive|negative|neutral)$"),
     relevance: str | None = Query(None, pattern="^(direct|related)$"),
     limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ):
     """Articles for the given symbols, newest first.
 
     With no `symbols` this returns the whole watchlist's feed, which is what the
     dashboard wants and saves the client assembling the list itself.
+
+    `symbols` is not restricted to the watchlist: the quote-lookup filter hits
+    the whole news table, so a ticker you don't follow still returns whatever
+    has been stored for it. `offset` drives the infinite-scroll river — a short
+    page means the end of the data, not a transient empty.
     """
     wanted = parse_symbols(symbols) if symbols else db.watchlist.get_symbols()
     if not wanted:
@@ -43,6 +49,33 @@ def feed(
         since=since_iso,
         sentiment=sentiment,
         relevance=relevance,
+        limit=limit,
+        offset=offset,
+    )
+    return NewsList(results=[to_news(r) for r in rows])
+
+
+@router.get("/trending", response_model=NewsList)
+def trending(
+    symbols: str | None = Query(None, description="Comma-separated. Defaults to the watchlist."),
+    days: int = Query(2, ge=1, le=30),
+    per_stock: int = Query(3, ge=1, le=10),
+    limit: int = Query(12, ge=1, le=60),
+):
+    """The lead section: articles ordered by their stock's price move.
+
+    "Trending" here means the market moved, not that the article was clicked —
+    there is no traffic data to rank by, and the size of a 24h move is the
+    honest proxy for what matters today.
+    """
+    wanted = parse_symbols(symbols) if symbols else db.watchlist.get_symbols()
+    if not wanted:
+        return NewsList(results=[])
+
+    rows = db.news.get_trending(
+        short_names=wanted,
+        since=days_ago_iso(days),
+        per_stock=per_stock,
         limit=limit,
     )
     return NewsList(results=[to_news(r) for r in rows])

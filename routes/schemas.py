@@ -49,6 +49,8 @@ class NewsArticle(BaseModel):
     description: Optional[str] = None
     sentiment: Optional[float] = None
     ai_summary: Optional[str] = None
+    # Only set on /news/trending, where the ranking is the stock's price move.
+    movePercent: Optional[float] = None
 
 
 class NewsList(BaseModel):
@@ -136,6 +138,7 @@ def to_news(row: dict) -> NewsArticle:
         description=row.get("description"),
         sentiment=row.get("sentiment"),
         ai_summary=row.get("ai_summary"),
+        movePercent=row.get("move_percent"),
     )
 
 
