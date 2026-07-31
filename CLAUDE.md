@@ -3,6 +3,9 @@
 Free stock news + price aggregator. Two apps, one repo, no shared build tooling
 between them — they only meet over HTTP.
 
+Remote: `profesr-chaos/stock-pulse` (the repo is named for the frontend package,
+which predates the merge; the project is Stocky).
+
 | Path | Stack | Run from that dir |
 |---|---|---|
 | `backend/` | FastAPI + SQLite | `.venv/Scripts/python.exe main.py` → :5000 |
@@ -28,6 +31,8 @@ so commits before the graft record the *old* paths (`main.py`, not
   `git log -- frontend/src src`.
 - `git log --follow` does not work across the graft at all.
 
-The pre-monorepo checkouts are parked in `..\stocky-legacy\` (also the stale
-`stock-pulse` prototype — a dead parallel copy, not a third app). Nothing there
-is live; delete once you trust this repo.
+The pre-monorepo checkouts are parked in `..\stocky-legacy\`. Nothing there is
+live; delete once you trust this repo. It also holds a dead parallel frontend
+copy from `AdamTweedie/stock-pulse` — **a different repo that happens to share
+this one's name**, last touched April 2026, with a `USE_MOCK_DATA` flag and dead
+`/auth` URLs. Don't confuse it with the `profesr-chaos/stock-pulse` remote above.
