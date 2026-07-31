@@ -1,0 +1,51 @@
+[project]
+name = "stocky-backend"
+version = "0.2.0"
+description = "Free stock news + price aggregator. Scrapers only, no paid APIs."
+authors = [
+    {name = "MrAdamTweedie",email = "adamgtweedie@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi (>=0.135.2,<0.136.0)",
+    "uvicorn (>=0.42.0,<0.43.0)",
+    "pydantic (>=2.12.5,<3.0.0)",
+    "httpx[http2] (>=0.28.1,<0.29.0)",
+    # Required, not optional: we advertise `Accept-Encoding: br` to look like a
+    # browser, and some sources (Finviz) take us up on it. Without a decoder
+    # httpx hands back raw brotli bytes and the parse silently yields nothing.
+    "brotli (>=1.1.0,<2.0.0)",
+    "beautifulsoup4 (>=4.14.3,<5.0.0)",
+    "feedparser (>=6.0.12,<7.0.0)",
+    "rapidfuzz (>=3.14.3,<4.0.0)",
+    "vadersentiment (>=3.3.2,<4.0.0)",
+    "apscheduler (>=3.11.2,<4.0.0)",
+    "python-dotenv (>=1.2.2,<2.0.0)",
+    "openai (>=2.30.0,<3.0.0)",
+    # Windows ships no IANA database, so zoneinfo needs this to convert
+    # Finviz's US-market timestamps.
+    "tzdata (>=2025.1)",
+]
+
+# FinBERT is opt-in: `poetry install --extras finbert`, then STOCKY_SENTIMENT=finbert.
+# Default sentiment is finance-tuned VADER, which needs no torch (~2.5GB saved).
+[project.optional-dependencies]
+finbert = [
+    "transformers (>=5.4.0,<6.0.0)",
+    "torch (>=2.11.0,<3.0.0)",
+    "accelerate (>=1.13.0,<2.0.0)",
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.2,<10.0.0)",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

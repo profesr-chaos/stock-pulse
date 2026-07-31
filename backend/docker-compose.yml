@@ -1,0 +1,35 @@
+# docker compose up
+#
+# The volume is the ./data *directory*, not the .db file: WAL mode writes
+# sibling -wal and -shm files, and a single-file bind mount cannot see them.
+# Both containers share it, which is fine — WAL plus a busy timeout handles one
+# writer at a time.
+services:
+  api:
+    build: .
+    container_name: stocky_api
+    # Loopback only: there is no authentication.
+    ports:
+      - "127.0.0.1:5000:5000"
+    env_file:
+      - .env
+    environment:
+      STOCKY_DB: /app/data/stocky.db
+      STOCKY_HOST: 0.0.0.0        # inside the container; published on loopback
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  scheduler:
+    build: .
+    container_name: stocky_scheduler
+    command: python scheduler.py
+    env_file:
+      - .env
+    environment:
+      STOCKY_DB: /app/data/stocky.db
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    depends_on:
+      - api
