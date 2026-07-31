@@ -4,6 +4,9 @@ export interface Stock {
   symbol: string;
   name: string | null;
   type: string | null;
+  /** Yahoo's coarse bucket, e.g. "Industrials". Null for funds and indices. */
+  sector: string | null;
+  /** Yahoo's precise bucket, e.g. "Aerospace & Defense". */
   industry: string | null;
   /** Currency the price is actually quoted in, not the catalogue's guess. */
   currencyCode: string | null;
@@ -102,9 +105,25 @@ export interface SourceCount {
   article_count: number;
 }
 
+/**
+ * One filterable sector. `level` is 'group' for Yahoo's eleven coarse buckets
+ * and 'industry' for the precise ones — both are offered, because "Industrials"
+ * is too broad to mean space and "Aerospace & Defense" is too narrow to browse.
+ */
+export interface Sector {
+  sector: string;
+  level: 'group' | 'industry';
+  group: string | null;
+  stockCount: number;
+}
+
 // ─── List wrappers ─────────────────────────────────────────
 export interface StockListResponse {
   results: Stock[];
+}
+
+export interface SectorListResponse {
+  results: Sector[];
 }
 
 export interface NewsListResponse {

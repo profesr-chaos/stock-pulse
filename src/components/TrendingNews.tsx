@@ -1,12 +1,14 @@
+import Headline from '@/components/Headline';
 import NewsImage from '@/components/NewsImage';
 import TickerTag from '@/components/TickerTag';
-import { useTrendingNews, type SymbolFilter } from '@/hooks/useStockNews';
+import { useTrendingNews, type FeedFilter } from '@/hooks/useStockNews';
 import { formatAgeLong } from '@/lib/format';
 import type { NewsArticle } from '@/types/stock';
 
 interface TrendingNewsProps {
-  filter: SymbolFilter;
+  filter: FeedFilter;
   onSelectSymbol: (symbol: string) => void;
+  onOpenArticle: (article: NewsArticle) => void;
 }
 
 const Meta = ({ article }: { article: NewsArticle }) => (
@@ -21,7 +23,7 @@ const Meta = ({ article }: { article: NewsArticle }) => (
  * The first headline is the LCP element, so its image is the one request on the
  * page marked high priority and everything below it is lazy.
  */
-const TrendingNews = ({ filter, onSelectSymbol }: TrendingNewsProps) => {
+const TrendingNews = ({ filter, onSelectSymbol, onOpenArticle }: TrendingNewsProps) => {
   const { data: articles = [], isLoading, isError } = useTrendingNews(filter);
 
   // The placeholder is sized to the loaded section, not to a token grey box.
@@ -76,11 +78,9 @@ const TrendingNews = ({ filter, onSelectSymbol }: TrendingNewsProps) => {
       <article className="mt-3 bg-paper-tint p-4 md:p-6">
         <div className="grid gap-4 md:grid-cols-2 md:items-center md:gap-6">
           <div className="min-w-0">
-            <a href={lead.url} target="_blank" rel="noopener noreferrer">
-              <h3 className="ft-headline text-[26px] leading-[1.15] md:text-[34px]">
-                {lead.title}
-              </h3>
-            </a>
+            <h3 className="ft-headline text-[26px] leading-[1.15] md:text-[34px]">
+              <Headline article={lead} onOpen={onOpenArticle} />
+            </h3>
             {lead.description && (
               <p className="mt-3 line-clamp-4 text-[15px] leading-snug text-ink">
                 {lead.description}
@@ -97,16 +97,15 @@ const TrendingNews = ({ filter, onSelectSymbol }: TrendingNewsProps) => {
           </div>
 
           {lead.image && (
-            <a
-              href={lead.url}
-              target="_blank"
-              rel="noopener noreferrer"
+            <button
+              type="button"
+              onClick={() => onOpenArticle(lead)}
               className="order-first aspect-[16/9] w-full overflow-hidden md:order-none"
               tabIndex={-1}
               aria-hidden="true"
             >
               <NewsImage src={lead.image} alt="" priority />
-            </a>
+            </button>
           )}
         </div>
       </article>
@@ -115,19 +114,25 @@ const TrendingNews = ({ filter, onSelectSymbol }: TrendingNewsProps) => {
         <div className="mt-6 grid gap-5 border-t border-rule pt-5 sm:grid-cols-2">
           {featured.map((article, index) => (
             <article key={article.id}>
-              <a href={article.url} target="_blank" rel="noopener noreferrer">
-                {article.image && (
-                  <div className="mb-2 aspect-[16/9] w-full overflow-hidden">
-                    {/* The lead's image shares its row with the headline, so
-                        it is only half the panel wide — this one renders at a
-                        similar size and can win the LCP outright. Both are
-                        above the fold; leaving this one lazy just means the
-                        LCP image is discovered late. */}
-                    <NewsImage src={article.image} alt="" priority={index === 0} />
-                  </div>
-                )}
-                <h4 className="ft-headline text-lg leading-snug">{article.title}</h4>
-              </a>
+              {article.image && (
+                <button
+                  type="button"
+                  onClick={() => onOpenArticle(article)}
+                  className="mb-2 block aspect-[16/9] w-full overflow-hidden"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                >
+                  {/* The lead's image shares its row with the headline, so
+                      it is only half the panel wide — this one renders at a
+                      similar size and can win the LCP outright. Both are
+                      above the fold; leaving this one lazy just means the
+                      LCP image is discovered late. */}
+                  <NewsImage src={article.image} alt="" priority={index === 0} />
+                </button>
+              )}
+              <h4 className="ft-headline text-lg leading-snug">
+                <Headline article={article} onOpen={onOpenArticle} />
+              </h4>
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
                 <Meta article={article} />
                 <TickerTag
@@ -145,9 +150,9 @@ const TrendingNews = ({ filter, onSelectSymbol }: TrendingNewsProps) => {
         <ul className="mt-5 grid gap-x-6 border-t border-rule pt-4 sm:grid-cols-2">
           {remainder.map((article) => (
             <li key={article.id} className="border-b border-rule-light py-3 last:border-0">
-              <a href={article.url} target="_blank" rel="noopener noreferrer">
-                <h4 className="ft-headline text-base leading-snug">{article.title}</h4>
-              </a>
+              <h4 className="ft-headline text-base leading-snug">
+                <Headline article={article} onOpen={onOpenArticle} />
+              </h4>
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
                 <Meta article={article} />
                 <TickerTag

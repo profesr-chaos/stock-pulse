@@ -64,6 +64,18 @@ export const changeClass = (value: number | null | undefined): string => {
   return value > 0 ? 'text-up' : 'text-down';
 };
 
+/**
+ * Sentiment as a signed two-decimal score, e.g. "+0.42".
+ *
+ * Kept on the raw -1…1 scale rather than rescaled to a percentage: the number
+ * appears beside a price move that *is* a percentage, and two differently
+ * meaning percentages side by side invite reading one as the other.
+ */
+export const formatSentiment = (value: number | null | undefined): string => {
+  if (value === null || value === undefined) return '—';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}`;
+};
+
 export type SentimentBand = 'positive' | 'negative' | 'neutral';
 
 export const sentimentBand = (score: number | null | undefined): SentimentBand => {

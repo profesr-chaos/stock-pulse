@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { NewsArticle } from '@/types/stock';
 
-import { LATEST_SHOWN, diversify } from './useStockNews';
+import { LATEST_SHOWN, dedupeByUrl, diversify } from './useStockNews';
 
 let nextId = 1;
 
@@ -22,6 +22,17 @@ const article = (symbol: string, domain: string): NewsArticle => ({
   description: null,
   sentiment: null,
   ai_summary: null,
+});
+
+describe('dedupeByUrl', () => {
+  it('keeps the first row of a story and drops the rest', () => {
+    const url = 'https://ft.com/one-story';
+    const first = { ...article('MSFT', 'ft.com'), url };
+    const second = { ...article('AAPL', 'ft.com'), url };
+    const other = article('TSLA', 'reuters.com');
+
+    expect(dedupeByUrl([first, second, other]).map((a) => a.id)).toEqual([first.id, other.id]);
+  });
 });
 
 describe('diversify', () => {
@@ -62,6 +73,17 @@ describe('diversify', () => {
   it('never returns more than the column shows', () => {
     const input = Array.from({ length: 60 }, (_, i) => article(`SYM${i}`, `wire${i}.com`));
     expect(diversify(input, true)).toHaveLength(LATEST_SHOWN);
+  });
+
+  it('prints a cross-listed story once, not once per ticker', () => {
+    // The real failure: one Yahoo piece named both Apple and Microsoft, so the
+    // backend stored two rows, and Latest showed the identical headline twice
+    // in a row tagged MSFT +15.51% and AAPL -1.41%.
+    const url = 'https://finance.yahoo.com/m/dow-jones-futures';
+    const asMsft = { ...article('MSFT', 'finance.yahoo.com'), url };
+    const asAapl = { ...article('AAPL', 'finance.yahoo.com'), url };
+
+    expect(diversify([asMsft, asAapl], true)).toHaveLength(1);
   });
 
   it('falls back to the source name when there is no domain', () => {

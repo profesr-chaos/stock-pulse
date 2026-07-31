@@ -21,7 +21,7 @@ const requestedUrl = () => new URL(mockFetch.mock.calls[0][0].toString());
 
 describe('news queries', () => {
   it('sends the ticker filter to the server rather than filtering locally', async () => {
-    // The whole point of the quote lookup: it must reach the entire news
+    // The whole point of the search box: it must reach the entire news
     // table, not narrow the articles already rendered on the page.
     await getNews({ symbols: ['TSLA'] });
     const url = requestedUrl();
@@ -55,5 +55,38 @@ describe('news queries', () => {
     const url = requestedUrl();
     expect(url.pathname).toBe('/news/trending');
     expect(url.searchParams.get('per_stock')).toBe('3');
+  });
+
+  it('searches the server, not the loaded page', async () => {
+    // A client-side search could only ever match the ~50 articles already
+    // fetched, while looking like it searched everything stored.
+    await getNews({ q: 'launch failure' });
+    expect(requestedUrl().searchParams.get('q')).toBe('launch failure');
+  });
+
+  it('sorts on the server, not the loaded page', async () => {
+    await getNews({ sort: 'sentiment' });
+    expect(requestedUrl().searchParams.get('sort')).toBe('sentiment');
+  });
+
+  it('sends the sector filter to the server', async () => {
+    await getNews({ sector: 'Aerospace & Defense' });
+    expect(requestedUrl().searchParams.get('sector')).toBe('Aerospace & Defense');
+  });
+
+  it('drops an empty search rather than sending q=', async () => {
+    // `q=` would be a search for the empty string; omitting it is the
+    // difference between "no filter" and "match nothing".
+    await getNews({ q: '', sector: '' });
+    const url = requestedUrl();
+    expect(url.searchParams.has('q')).toBe(false);
+    expect(url.searchParams.has('sector')).toBe(false);
+  });
+
+  it('narrows the lead section by sector too', async () => {
+    // A filter that reordered the feed but left the hero on an unrelated
+    // stock would read as the filter having failed.
+    await getTrendingNews({ sector: 'Industrials' });
+    expect(requestedUrl().searchParams.get('sector')).toBe('Industrials');
   });
 });

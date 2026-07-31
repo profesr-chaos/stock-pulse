@@ -15,13 +15,21 @@ export interface NewsQuery {
    * a ticker you don't follow still returns whatever is stored for it.
    */
   symbols?: string[];
+  /** Free-text search over headline, summary and ticker — server-side. */
+  q?: string;
+  /** Sector or industry name, matched against either column server-side. */
+  sector?: string;
   days?: number;
   since?: string;
   sentiment?: 'positive' | 'negative' | 'neutral';
   relevance?: Relevance;
+  sort?: SortKey;
   limit?: number;
   offset?: number;
 }
+
+/** Mirrors _SORTS in db/news.py. 'coverage' is "most news articles". */
+export type SortKey = 'recent' | 'sentiment' | 'coverage' | 'symbol';
 
 export const getNews = (
   query: NewsQuery = {},
@@ -33,10 +41,13 @@ export const getNews = (
     boot,
     params: {
       symbols: query.symbols?.length ? query.symbols.join(',') : undefined,
+      q: query.q || undefined,
+      sector: query.sector || undefined,
       days: query.days,
       since: query.since,
       sentiment: query.sentiment,
       relevance: query.relevance,
+      sort: query.sort,
       limit: query.limit,
       offset: query.offset,
     },
@@ -44,6 +55,7 @@ export const getNews = (
 
 export interface TrendingNewsQuery {
   symbols?: string[];
+  sector?: string;
   days?: number;
   perStock?: number;
   limit?: number;
@@ -60,6 +72,7 @@ export const getTrendingNews = (
     boot,
     params: {
       symbols: query.symbols?.length ? query.symbols.join(',') : undefined,
+      sector: query.sector || undefined,
       days: query.days,
       per_stock: query.perStock,
       limit: query.limit,

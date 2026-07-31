@@ -1,10 +1,20 @@
-import type { PriceSeries, Stock, StockListResponse } from '@/types/stock';
+import type {
+  PriceSeries,
+  Sector,
+  SectorListResponse,
+  Stock,
+  StockListResponse,
+} from '@/types/stock';
 
 import { apiFetch } from './api';
 
 export const searchStocks = (query: string, signal?: AbortSignal): Promise<Stock[]> =>
   apiFetch<StockListResponse>('/stocks/search', { params: { q: query }, signal })
     .then((data) => data.results);
+
+/** Sectors that actually hold a followed stock — the filter menu. */
+export const getSectors = (): Promise<Sector[]> =>
+  apiFetch<SectorListResponse>('/stocks/sectors').then((data) => data.results);
 
 export const getPopularStocks = (): Promise<Stock[]> =>
   apiFetch<StockListResponse>('/stocks/popular').then((data) => data.results);

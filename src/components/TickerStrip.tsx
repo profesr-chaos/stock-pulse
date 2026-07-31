@@ -23,7 +23,7 @@ const TickerStrip = ({ stocks, onEdit, onSelect }: TickerStripProps) => {
 
   return (
     <div className="border-b border-rule bg-paper">
-      <div className="mx-auto flex h-12 max-w-[1280px] items-center gap-3 px-3 md:px-5">
+      <div className="mx-auto flex h-12 max-w-[1600px] items-center gap-3 px-3 md:px-5">
         <WatchlistWheel stocks={stocks} onClick={onEdit} />
 
         <div className="group relative min-w-0 flex-1 overflow-hidden">
