@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { Impact, NewsArticle } from '@/types/stock';
+
 import {
+  byImpact,
   formatAge,
   formatPercent,
   formatPrice,
@@ -82,5 +85,39 @@ describe('sentimentBand', () => {
   it('treats an unscored article as neutral, not positive', () => {
     expect(sentimentBand(null)).toBe('neutral');
     expect(sentimentTextClass(null)).toContain('muted');
+  });
+});
+
+describe('byImpact', () => {
+  const article = (id: string, impact?: Impact | null) =>
+    ({ id, impact } as NewsArticle);
+
+  it('puts the high-impact story on top', () => {
+    const sorted = byImpact([
+      article('low', 'low'),
+      article('high', 'high'),
+      article('medium', 'medium'),
+    ]);
+    expect(sorted.map((a) => a.id)).toEqual(['high', 'medium', 'low']);
+  });
+
+  it('ranks an unjudged article with low, not above it', () => {
+    const sorted = byImpact([article('unjudged', null), article('medium', 'medium')]);
+    expect(sorted.map((a) => a.id)).toEqual(['medium', 'unjudged']);
+  });
+
+  it('keeps recency order inside a tier', () => {
+    const sorted = byImpact([
+      article('newest', 'high'),
+      article('older', 'high'),
+      article('oldest', 'high'),
+    ]);
+    expect(sorted.map((a) => a.id)).toEqual(['newest', 'older', 'oldest']);
+  });
+
+  it('does not mutate the page it was given', () => {
+    const page = [article('low', 'low'), article('high', 'high')];
+    byImpact(page);
+    expect(page.map((a) => a.id)).toEqual(['low', 'high']);
   });
 });

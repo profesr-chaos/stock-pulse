@@ -1,5 +1,6 @@
 import Headline from '@/components/Headline';
 import NewsImage from '@/components/NewsImage';
+import ImpactTag from '@/components/ImpactTag';
 import TickerTag from '@/components/TickerTag';
 import { useTrendingNews, type FeedFilter } from '@/hooks/useStockNews';
 import { formatAgeLong } from '@/lib/format';
@@ -93,6 +94,7 @@ const TrendingNews = ({ filter, onSelectSymbol, onOpenArticle }: TrendingNewsPro
                 fallbackMove={lead.movePercent}
                 onSelect={onSelectSymbol}
               />
+              <ImpactTag impact={lead.impact} />
             </div>
           </div>
 
@@ -140,6 +142,7 @@ const TrendingNews = ({ filter, onSelectSymbol, onOpenArticle }: TrendingNewsPro
                   fallbackMove={article.movePercent}
                   onSelect={onSelectSymbol}
                 />
+                <ImpactTag impact={article.impact} />
               </div>
             </article>
           ))}
@@ -160,6 +163,7 @@ const TrendingNews = ({ filter, onSelectSymbol, onOpenArticle }: TrendingNewsPro
                   fallbackMove={article.movePercent}
                   onSelect={onSelectSymbol}
                 />
+                <ImpactTag impact={article.impact} />
               </div>
             </li>
           ))}

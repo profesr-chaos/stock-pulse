@@ -22,6 +22,9 @@ export interface Stock {
 /** 'direct' names the stock; 'related' is sector context from a curated feed. */
 export type Relevance = 'direct' | 'related';
 
+/** How materially new the event layer judged an article to be. */
+export type Impact = 'high' | 'medium' | 'low';
+
 export interface NewsArticle {
   /** UUIDv7 — time-ordered, so it sorts chronologically as well as uniquely. */
   id: string;
@@ -41,6 +44,12 @@ export interface NewsArticle {
   /** -1 … 1, or null when not yet scored. */
   sentiment: number | null;
   ai_summary: string | null;
+  /**
+   * Optional because it is genuinely absent, not merely unknown: articles
+   * stored before the event layer existed, and any batch the judge could not
+   * be reached for, carry null. That is distinct from a judged 'low'.
+   */
+  impact?: Impact | null;
   /** The stock's price move. Only set on /news/trending, which ranks by it. */
   movePercent?: number | null;
 }

@@ -1,4 +1,5 @@
 /** Display helpers shared across components. */
+import type { Impact, NewsArticle } from '@/types/stock';
 
 const SYMBOLS: Record<string, string> = {
   USD: '$', EUR: '€', GBP: '£', CHF: 'CHF ', JPY: '¥',
@@ -75,6 +76,26 @@ export const formatSentiment = (value: number | null | undefined): string => {
   if (value === null || value === undefined) return '—';
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)}`;
 };
+
+/**
+ * Triage order: high, medium, then everything else.
+ *
+ * Unjudged (null) ranks with 'low' rather than above it. An article the event
+ * layer never saw is not a claim that it matters — treating absence as
+ * significance would float every pre-feature article to the top.
+ */
+export const impactRank = (impact: Impact | null | undefined): number =>
+  impact === 'high' ? 0 : impact === 'medium' ? 1 : 2;
+
+/**
+ * Highest tier first, recency preserved inside each tier.
+ *
+ * Applied per page, not across the whole river: re-sorting the accumulated
+ * list every time a page arrives would slide already-read stories out from
+ * under the reader's scroll position.
+ */
+export const byImpact = (articles: NewsArticle[]): NewsArticle[] =>
+  [...articles].sort((a, b) => impactRank(a.impact) - impactRank(b.impact));
 
 export type SentimentBand = 'positive' | 'negative' | 'neutral';
 
