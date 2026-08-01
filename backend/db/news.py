@@ -15,7 +15,7 @@ from normalize import days_ago_iso
 
 from .connection import executemany, get_connection, one, rows
 
-_ALLOWED_UPDATE_FIELDS = frozenset({"sentiment", "ai_summary", "image", "description", "url", "source", "source_domain"})
+_ALLOWED_UPDATE_FIELDS = frozenset({"sentiment", "ai_summary", "image", "description", "url", "source", "source_domain", "impact"})
 
 # 16 columns per row against Postgres' 65535-parameter ceiling.
 _INSERT_CHUNK = 500
@@ -136,6 +136,7 @@ def get_news(
     until: str | None = None,
     sentiment: str | None = None,
     relevance: str | None = None,
+    impact: str | None = None,
     query: str | None = None,
     sort: str | None = None,
     limit: int = 200,
@@ -164,6 +165,9 @@ def get_news(
     if relevance:
         where.append("relevance = %s")
         params.append(relevance)
+    if impact:
+        where.append("impact = %s")
+        params.append(impact)
     if since:
         where.append("publish_time >= %s")
         params.append(since)

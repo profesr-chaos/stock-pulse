@@ -65,12 +65,31 @@ class NewsArticle(BaseModel):
     description: Optional[str] = None
     sentiment: Optional[float] = None
     ai_summary: Optional[str] = None
+    # 'high' | 'medium' | 'low' from the event layer. None means unjudged —
+    # the article predates the feature or the LLM was unavailable — which is
+    # not the same as a judged 'low'.
+    impact: Optional[str] = None
     # Only set on /news/trending, where the ranking is the stock's price move.
     movePercent: Optional[float] = None
 
 
 class NewsList(BaseModel):
     results: list[NewsArticle]
+
+
+class EventOut(BaseModel):
+    id: UUID
+    short_name: str
+    created_at: str
+    headline: str
+    why_it_matters: str
+    previously_known: Optional[str] = None
+    impact: str
+    news_ids: list[UUID] = []
+
+
+class EventList(BaseModel):
+    results: list[EventOut]
 
 
 class PricePoint(BaseModel):
@@ -155,7 +174,21 @@ def to_news(row: dict) -> NewsArticle:
         description=row.get("description"),
         sentiment=row.get("sentiment"),
         ai_summary=row.get("ai_summary"),
+        impact=row.get("impact"),
         movePercent=row.get("move_percent"),
+    )
+
+
+def to_event(row: dict) -> EventOut:
+    return EventOut(
+        id=row["id"],
+        short_name=row["short_name"],
+        created_at=row["created_at"],
+        headline=row["headline"],
+        why_it_matters=row["why_it_matters"],
+        previously_known=row.get("previously_known"),
+        impact=row["impact"],
+        news_ids=row.get("news_ids") or [],
     )
 
 

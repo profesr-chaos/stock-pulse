@@ -128,7 +128,11 @@ CREATE TABLE IF NOT EXISTS news (
     ai_summary     TEXT,
     -- 'direct' names the stock; 'related' is sector context from a
     -- symbol-keyed source that never names it
-    relevance      TEXT NOT NULL DEFAULT 'direct'
+    relevance      TEXT NOT NULL DEFAULT 'direct',
+    -- 'high' | 'medium' | 'low', judged by the event layer. NULL means
+    -- unjudged (predates the feature, or the LLM was unavailable) — which is
+    -- deliberately distinct from a judged 'low'.
+    impact         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS prices (
@@ -167,6 +171,25 @@ CREATE TABLE IF NOT EXISTS stock_ai_summaries (
     days          INTEGER NOT NULL DEFAULT 7,
     article_count INTEGER NOT NULL DEFAULT 0
 );
+
+-- What actually happened, as opposed to what was written about. One row per
+-- materially new development, judged against the coverage already stored.
+CREATE TABLE IF NOT EXISTS events (
+    id               UUID PRIMARY KEY DEFAULT uuidv7(),
+    created_at       TEXT NOT NULL DEFAULT {_NOW},
+    short_name       TEXT NOT NULL,
+    headline         TEXT NOT NULL,   -- what's new, one line
+    why_it_matters   TEXT NOT NULL,
+    previously_known TEXT,            -- NULL when genuinely fresh
+    impact           TEXT NOT NULL,   -- 'high' | 'medium' | 'low'
+    news_ids         UUID[] NOT NULL, -- backing articles
+    tokens_total     INTEGER NOT NULL DEFAULT 0
+);
+
+-- CREATE TABLE IF NOT EXISTS leaves an existing table alone, so a new column
+-- on an old database needs its own idempotent statement or the app runs on the
+-- old shape while the tests pass.
+ALTER TABLE news ADD COLUMN IF NOT EXISTS impact TEXT;
 """
 
 _INDEXES = """
@@ -178,6 +201,7 @@ CREATE INDEX        IF NOT EXISTS idx_news_time         ON news(publish_time DES
 CREATE INDEX        IF NOT EXISTS idx_news_stock_key    ON news(short_name, title_key);
 CREATE INDEX        IF NOT EXISTS idx_prices_stock_ts   ON prices(short_name, ts);
 CREATE INDEX        IF NOT EXISTS idx_summaries_stock   ON stock_ai_summaries(short_name, created_at DESC);
+CREATE INDEX        IF NOT EXISTS idx_events_stock_time  ON events(short_name, created_at DESC);
 """
 
 

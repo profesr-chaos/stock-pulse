@@ -43,7 +43,7 @@ def temp_db():
     with db.get_connection() as conn:
         conn.execute(
             "TRUNCATE stocks, news, prices, watchlist,"
-            " stock_sentiment_history, stock_ai_summaries RESTART IDENTITY"
+            " stock_sentiment_history, stock_ai_summaries, events RESTART IDENTITY"
         )
     return TEST_DSN
 

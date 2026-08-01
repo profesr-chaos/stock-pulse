@@ -37,7 +37,7 @@ import db
 import settings
 from normalize import days_ago_iso
 
-from .. import dedup, sentiment_service, symbols
+from .. import dedup, events, sentiment_service, symbols
 from . import bing_news, finviz, google_news, images, nasdaq_news, sec_edgar, yahoo_news
 
 __all__ = ["collect", "refresh", "backfill", "refresh_watchlist", "images"]
@@ -87,7 +87,8 @@ def _aliases(stock: dict) -> tuple[str, ...]:
     return tuple(a for a in aliases if a)
 
 
-def refresh(short_name: str, days: int = 2, score: bool = True) -> dict:
+def refresh(short_name: str, days: int = 2, score: bool = True,
+            detect_events: bool = True) -> dict:
     """Scrape, dedupe and store news for one stock."""
     stock = db.stocks.get_stock(short_name) or {}
     company_name = stock.get("name") or short_name
@@ -116,6 +117,14 @@ def refresh(short_name: str, days: int = 2, score: bool = True) -> dict:
     if score and inserted_ids:
         sentiment_service.score_news_ids(inserted_ids)
 
+    # Same containment as a source failing in collect(): a dead LLM degrades
+    # the refresh to "articles stored, nothing judged", it does not fail it.
+    if detect_events and inserted_ids:
+        try:
+            events.detect(short_name, inserted_ids)
+        except Exception as exc:
+            print(f"[events] {short_name} failed: {type(exc).__name__}: {exc}")
+
     print(f"[news] {short_name}: {len(raw)} found -> {len(inserted_ids)} new "
           f"(dropped {prepared.dropped}, enriched {len(prepared.enrichments)})")
 
@@ -131,7 +140,9 @@ def refresh(short_name: str, days: int = 2, score: bool = True) -> dict:
 def backfill(short_name: str, days: int | None = None) -> dict:
     """Deep pull for a newly followed stock: a month of history by default."""
     days = days or settings.BACKFILL_DAYS
-    result = refresh(short_name, days=days)
+    # A month of history is not "new events" — judging it would spend tokens
+    # announcing last month's news. The next hourly refresh takes over.
+    result = refresh(short_name, days=days, detect_events=False)
     images.backfill_images([short_name])
     return result
 

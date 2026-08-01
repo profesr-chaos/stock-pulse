@@ -19,7 +19,7 @@ import db
 import jobs
 import settings
 from routes.insights import router as insights_router
-from routes.news import router as news_router
+from routes.news import events_router, router as news_router
 from routes.stocks import router as stocks_router
 from routes.system import router as system_router
 from routes.watchlist import router as watchlist_router
@@ -57,6 +57,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.include_router(system_router)
 app.include_router(stocks_router)
 app.include_router(news_router)
+app.include_router(events_router)
 app.include_router(watchlist_router)
 app.include_router(insights_router)
 

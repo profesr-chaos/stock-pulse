@@ -113,6 +113,10 @@ def sec_enabled() -> bool:
 # ── Optional third-party keys ────────────────────────────────────────────
 DEEPSEEK_KEY = os.getenv("DSEEK") or None
 DEEPSEEK_BASE_URL = os.getenv("STOCKY_DEEPSEEK_URL", "https://api.deepseek.com")
+# Env-overridable because DeepSeek retires aliases without warning: the
+# `deepseek-chat` this used to hardcode went away on 2026-07-24 and every
+# summary silently started failing. Changing a model should not need a deploy.
+DEEPSEEK_MODEL = os.getenv("STOCKY_DEEPSEEK_MODEL", "deepseek-v4-flash")
 T212_KEY = os.getenv("212pk") or None
 T212_SECRET = os.getenv("212sk") or None
 T212_INSTRUMENTS_URL = os.getenv(
