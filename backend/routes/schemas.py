@@ -5,6 +5,7 @@ One place for the wire format, so a column rename can't silently change the API.
 from __future__ import annotations
 
 from typing import Optional
+from uuid import UUID
 
 from fastapi import HTTPException, Query
 from pydantic import BaseModel
@@ -49,7 +50,7 @@ class SectorList(BaseModel):
 
 
 class NewsArticle(BaseModel):
-    id: int
+    id: UUID
     short_name: str
     title: str
     url: str
@@ -64,12 +65,31 @@ class NewsArticle(BaseModel):
     description: Optional[str] = None
     sentiment: Optional[float] = None
     ai_summary: Optional[str] = None
+    # 'high' | 'medium' | 'low' from the event layer. None means unjudged —
+    # the article predates the feature or the LLM was unavailable — which is
+    # not the same as a judged 'low'.
+    impact: Optional[str] = None
     # Only set on /news/trending, where the ranking is the stock's price move.
     movePercent: Optional[float] = None
 
 
 class NewsList(BaseModel):
     results: list[NewsArticle]
+
+
+class EventOut(BaseModel):
+    id: UUID
+    short_name: str
+    created_at: str
+    headline: str
+    why_it_matters: str
+    previously_known: Optional[str] = None
+    impact: str
+    news_ids: list[UUID] = []
+
+
+class EventList(BaseModel):
+    results: list[EventOut]
 
 
 class PricePoint(BaseModel):
@@ -106,7 +126,7 @@ class Mover(BaseModel):
 
 
 class AiSummary(BaseModel):
-    id: Optional[int] = None
+    id: Optional[UUID] = None
     symbol: Optional[str] = None
     ai_summary: str
     cached: bool = False
@@ -154,7 +174,21 @@ def to_news(row: dict) -> NewsArticle:
         description=row.get("description"),
         sentiment=row.get("sentiment"),
         ai_summary=row.get("ai_summary"),
+        impact=row.get("impact"),
         movePercent=row.get("move_percent"),
+    )
+
+
+def to_event(row: dict) -> EventOut:
+    return EventOut(
+        id=row["id"],
+        short_name=row["short_name"],
+        created_at=row["created_at"],
+        headline=row["headline"],
+        why_it_matters=row["why_it_matters"],
+        previously_known=row.get("previously_known"),
+        impact=row["impact"],
+        news_ids=row.get("news_ids") or [],
     )
 
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import threading
+from uuid import UUID
 
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -324,7 +325,7 @@ def score_rows(rows: list[dict]) -> int:
     return db.news.set_sentiment_many({r["id"]: s for r, s in zip(rows, scores)})
 
 
-def score_news_ids(news_ids: list[int]) -> int:
+def score_news_ids(news_ids: list[UUID]) -> int:
     if not news_ids:
         return 0
     rows = [r for r in (db.news.get_news_by_id(i) for i in news_ids) if r]

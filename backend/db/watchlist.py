@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from normalize import now_iso
 
-from .connection import get_connection, rows
+from .connection import executemany, get_connection, rows
 
 
 def get_symbols() -> list[str]:
@@ -34,7 +34,7 @@ def get_watchlist() -> list[dict]:
 def is_following(short_name: str) -> bool:
     with get_connection() as conn:
         return bool(conn.execute(
-            "SELECT 1 FROM watchlist WHERE short_name = ?", (short_name,)
+            "SELECT 1 FROM watchlist WHERE short_name = %s", (short_name,)
         ).fetchone())
 
 
@@ -45,7 +45,8 @@ def add(short_name: str) -> bool:
             "SELECT COALESCE(MAX(position) + 1, 0) AS p FROM watchlist"
         ).fetchone()["p"]
         cur = conn.execute(
-            "INSERT OR IGNORE INTO watchlist (short_name, position) VALUES (?, ?)",
+            "INSERT INTO watchlist (short_name, position) VALUES (%s, %s)"
+            " ON CONFLICT (short_name) DO NOTHING",
             (short_name, next_pos),
         )
         return cur.rowcount > 0
@@ -54,14 +55,15 @@ def add(short_name: str) -> bool:
 def remove(short_name: str) -> bool:
     with get_connection() as conn:
         return conn.execute(
-            "DELETE FROM watchlist WHERE short_name = ?", (short_name,)
+            "DELETE FROM watchlist WHERE short_name = %s", (short_name,)
         ).rowcount > 0
 
 
 def reorder(ordered: list[str]) -> None:
     with get_connection() as conn:
-        conn.executemany(
-            "UPDATE watchlist SET position = ? WHERE short_name = ?",
+        executemany(
+            conn,
+            "UPDATE watchlist SET position = %s WHERE short_name = %s",
             [(i, name) for i, name in enumerate(ordered)],
         )
 
@@ -69,7 +71,7 @@ def reorder(ordered: list[str]) -> None:
 def mark_backfilled(short_name: str) -> None:
     with get_connection() as conn:
         conn.execute(
-            "UPDATE watchlist SET backfilled_at = ? WHERE short_name = ?",
+            "UPDATE watchlist SET backfilled_at = %s WHERE short_name = %s",
             (now_iso(), short_name),
         )
 

@@ -6,6 +6,8 @@ interpolated into outbound scraper URLs.
 """
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 import db
@@ -347,7 +349,15 @@ class TestNewsFeed:
         assert client.get(f"/news/{first['id']}").json()["title"] == first["title"]
 
     def test_unknown_article_is_404(self, client):
-        assert client.get("/news/999999").status_code == 404
+        # A well-formed id that simply isn't there.
+        assert client.get(f"/news/{uuid4()}").status_code == 404
+
+    def test_a_malformed_article_id_is_rejected_as_invalid_not_missing(self, client):
+        """Since ids became UUIDs, `/news/999999` is unparseable rather than
+        absent, so FastAPI rejects it at validation with a 422. Pinned because
+        it is a deliberate change from the integer-id 404."""
+        assert client.get("/news/999999").status_code == 422
+        assert client.get("/news/not-a-uuid").status_code == 422
 
     def test_sources_breakdown(self, client):
         results = client.get("/news/sources?days=90").json()["results"]
@@ -564,7 +574,8 @@ class TestAiSummaries:
     def test_article_summary_requires_the_article_to_exist(self, client, monkeypatch):
         from services import ai_service
         monkeypatch.setattr(ai_service, "available", lambda: True)
-        assert client.post("/news/999999/ai-summary").status_code == 404
+        assert client.post(f"/news/{uuid4()}/ai-summary").status_code == 404
+        assert client.post("/news/999999/ai-summary").status_code == 422
 
 
 class TestCors:

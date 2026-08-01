@@ -88,7 +88,7 @@ export const getNewsSources = (days = 14): Promise<SourceCount[]> =>
     .then((data) => data.results);
 
 /** POST because generating a summary can spend API tokens. */
-export const getArticleAiSummary = (id: number): Promise<AISummary> =>
+export const getArticleAiSummary = (id: string): Promise<AISummary> =>
   apiFetch<AISummary>(`/news/${id}/ai-summary`, { method: 'POST' });
 
 export const getStockAiSummary = (symbol: string, days = 7): Promise<AISummary> =>

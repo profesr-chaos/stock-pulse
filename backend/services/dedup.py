@@ -24,6 +24,10 @@ What happens now:
 * Relevance filtering applies only to sources that can bleed (a Google text
   query). Symbol-keyed sources are trusted, so "Chip stocks slide on AI fears"
   survives for NVDA even though it names neither the ticker nor the company.
+* **Churn** — advice questions, listicles and aggregator boilerplate ("Should
+  You Buy NVDA?", "3 Reasons to…") — is dropped at ingest. It is unique,
+  on-topic and not advertising, so no other filter sees it, and on a quiet day
+  it is the majority of the feed.
 """
 from __future__ import annotations
 
@@ -87,6 +91,52 @@ _SPAM_MARKERS = (
 )
 
 _MIN_TITLE_LENGTH = 15
+
+# Churn: unique, on-topic, zero-information SEO filler. It passes every other
+# filter — it names the stock, it isn't an ad, and each outlet's version is a
+# genuinely different article — so nothing before this catches it, and on a
+# quiet day it is most of the feed.
+#
+# Same philosophy as _SPAM_MARKERS: *only unambiguous churn*. Deliberately
+# kept, because they carry information and the sentiment lexicon scores them:
+# analyst actions (price targets, up/downgrades), earnings coverage, press
+# releases, and event-reporting headlines ("Why Nvidia fell 5% today").
+#
+# Apostrophes are a character class throughout: half these publishers emit the
+# curly one.
+# Several patterns are unanchored on purpose: the live feed puts the same
+# question at the end as often as the start ("NVIDIA Stock Price Up 2.9% -
+# Should You Buy?"), and the `.{1,60}?` gaps exist because publishers pad the
+# subject out to "NVIDIA Corp (NVDA) Stock" rather than "Nvidia".
+_CHURN_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
+    # Advice questions — the headline *is* the question, so there is no news.
+    r"\bShould You Buy\b",
+    r"\bIs It Too Late to Buy\b",
+    r"\bIs .{1,60}? a (Buy|Bargain|Millionaire[- ]Maker)\b",
+    r"\bIs .{1,60}? (the )?Best .{0,30}?Stock\b",
+    r"^Where Will .* Be in \d",
+    r"^Can .* Make You",
+    r"\bBuy, Sell,? or Hold\b",
+    r"\bWhich .{0,30}?Stock (Is|Could|Should|Will)\b",
+    # Listicles.
+    r"^\d+ (Reasons|Stocks|Things|Top|Best|Magnificent|Unstoppable)",
+    r"^(Top|Best) \d+",
+    r"\bStocks to (Buy|Consider)\b",
+    # Fool-style hype.
+    r"\bIf You(['’]d| Had)? Invested\b",
+    r"\bMillionaire\b",
+    r"\bSet You Up for Life\b",
+    r"\bNo[- ]Brainer\b",
+    r"^Prediction:",
+    r"^Here['’]s Why I\b",
+    # Zacks and aggregator boilerplate.
+    r"\bWhat (You|Investors) (Should|Need to) Know\b",
+    r"\bHere['’]s What Happened\b",
+    r"\bWhy .* Outpaced the (Stock )?Market\b",
+    r"\bWall Street Analysts (Think|Believe)\b",
+    r"\bInvestors Heavily Search\b",
+    r"\b(According to|Among) Hedge Funds\b",
+))
 
 # Generic corporate scaffolding, dropped before matching a company name.
 _LEGAL_SUFFIXES = frozenset("""
@@ -176,6 +226,15 @@ def is_spam(article: dict) -> bool:
     return any(marker in blob for marker in _SPAM_MARKERS)
 
 
+def is_churn(title: str) -> bool:
+    """True for zero-information SEO filler — see _CHURN_PATTERNS.
+
+    Title only: descriptions quote the headline of whatever they link to, so
+    matching the body would drop real articles for mentioning a listicle.
+    """
+    return any(p.search((title or "").strip()) for p in _CHURN_PATTERNS)
+
+
 # ── Clustering ───────────────────────────────────────────────────────────
 
 def same_story(a: dict, b: dict) -> bool:
@@ -255,6 +314,10 @@ def prepare(
 
         if is_spam(article):
             result.count("spam")
+            continue
+
+        if is_churn(article["title"]):
+            result.count("churn")
             continue
 
         if article["url_hash"] in seen_hashes:

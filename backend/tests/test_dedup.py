@@ -87,6 +87,89 @@ class TestSpam:
         )
 
 
+class TestChurn:
+    """Unique, on-topic, zero-information filler. Nothing before this catches
+    it, so if these leak the feed fills with them on a quiet day."""
+
+    @pytest.mark.parametrize("title", [
+        # Advice questions
+        "Should You Buy Nvidia Stock Before August?",
+        "Is It Too Late to Buy Apple Stock?",
+        "Is Nvidia a Buy Right Now?",
+        "Is Rocket Lab a Millionaire-Maker Stock?",
+        "Where Will Nvidia Stock Be in 5 Years?",
+        "Can Rocket Lab Make You a Fortune?",
+        "Nvidia Stock: Buy, Sell, or Hold?",
+        # Advice questions, as the live feed actually writes them: the question
+        # trails the headline, and the subject is padded out to a full name.
+        "NVIDIA (NASDAQ:NVDA) Stock Price Up 2.9% - Should You Buy?",
+        "Is NVIDIA Corp. Stock a Buy Now?",
+        "Is NVIDIA Corp (NVDA) a Bargain After 3.5% Drop?",
+        "Is NVIDIA Corp (NVDA) The Best Jim Cramer Stock to Buy Now?",
+        "Is NVIDIA Corp (NVDA) Stanley Druckenmiller's Best AI Stock Pick?",
+        "Nvidia vs. AMD vs. Intel: Which Stock Is the Better Buy?",
+        "NVIDIA vs. Sandisk: Which AI Stock Could Deliver Bigger Returns?",
+        # Listicles
+        "3 Reasons to Buy Apple Stock Like There's No Tomorrow",
+        "5 Magnificent Stocks to Hold Forever",
+        "Top 10 Growth Stocks for the Rest of 2026",
+        "Best Growth Stocks to Buy for July 31st",
+        "ASML and 21 More Stocks to Consider Buying Out of the AI Wreckage",
+        "ASML, Lam Research, and a Ton of Other Stocks to Buy Right Now",
+        # Fool-style hype
+        "If You'd Invested $10,000 in Apple in 2015, Here's What You'd Have",
+        "If You Invested $1,000 in Nvidia a Decade Ago",
+        "This Stock Could Set You Up for Life",
+        "Apple Stock Is a No-Brainer Buy Today",
+        "Prediction: Nvidia Will Be Worth $10 Trillion",
+        "Here's Why I Just Bought More Apple Stock",
+        # Zacks / aggregator boilerplate
+        "Apple (AAPL) Moves -0.55%: What You Should Know",
+        "Nvidia (NVDA) Stock Sinks: What You Need to Know",
+        "NVIDIA Corp Stock (NVDA) Closed Up by 3.46% on Jul 31: What Investors Need To Know",
+        "NVIDIA (NASDAQ:NVDA) Shares Down 3.6% - Here's What Happened",
+        "Why Apple (AAPL) Outpaced the Stock Market Today",
+        "Wall Street Analysts Think Apple Could Rally",
+        "Investors Heavily Search Apple Inc.: Here is What You Need to Know",
+        "Is Apple a Great Stock According to Hedge Funds?",
+    ])
+    def test_churn_is_recognised(self, title):
+        assert dedup.is_churn(title)
+
+    @pytest.mark.parametrize("title", [
+        # Analyst actions move prices and the sentiment lexicon scores them.
+        "Morgan Stanley raises Rocket Lab price target to $75 from $60",
+        "Apple downgraded to Neutral at Goldman Sachs",
+        # Earnings and press releases.
+        "Nvidia beats Q3 estimates as data centre revenue tops forecasts",
+        "Apple Inc. announces Q3 results and declares dividend",
+        # Real events, including event-reporting "why" headlines.
+        "Apple recalls 200,000 chargers over overheating risk",
+        "Why Nvidia fell 5% today after the CES keynote",
+        "Rocket Lab wins $266M Space Force launch contract",
+        # Live headlines the broader patterns must not swallow.
+        "Naver shares surge as Nvidia invests $1B in AI data centre",
+        "Michael Burry Sends Fresh Warning on Nvidia and Micron Stocks",
+        "Micron, Sandisk and other chip stocks get major boosts after Microsoft's earnings",
+        "Nvidia stock falls 5%: How credit risk sharing is impacting the AI trade",
+    ])
+    def test_real_news_survives(self, title):
+        assert not dedup.is_churn(title)
+
+    def test_churn_is_dropped_and_counted_by_prepare(self):
+        batch = [
+            article(title="Should You Buy Apple Stock Before August?",
+                    url="https://fool.com/a"),
+            article(title="3 Reasons to Buy Apple Stock Right Now",
+                    url="https://fool.com/b"),
+            article(title="Apple beats Q3 estimates as iPhone revenue tops forecasts",
+                    url="https://reuters.com/c"),
+        ]
+        result = dedup.prepare(batch, "AAPL", "Apple")
+        assert [r["url"] for r in result.rows] == ["https://reuters.com/c"]
+        assert result.dropped["churn"] == 2
+
+
 class TestPrepare:
     def test_same_story_from_many_outlets_stores_once(self):
         batch = [

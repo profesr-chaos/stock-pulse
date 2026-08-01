@@ -1,4 +1,5 @@
 import Headline from '@/components/Headline';
+import ImpactTag from '@/components/ImpactTag';
 import TickerTag from '@/components/TickerTag';
 import { useLatestNews, type FeedFilter } from '@/hooks/useStockNews';
 import { formatAgeLong } from '@/lib/format';
@@ -46,6 +47,7 @@ const LatestNews = ({ filter, onSelectSymbol, onOpenArticle }: LatestNewsProps) 
                 {article.source} · {formatAgeLong(article.publish_time)}
               </p>
               <TickerTag symbol={article.short_name} onSelect={onSelectSymbol} />
+              <ImpactTag impact={article.impact} />
             </div>
           </li>
         ))}

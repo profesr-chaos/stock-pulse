@@ -8,7 +8,7 @@ which predates the merge; the project is Stocky).
 
 | Path | Stack | Run from that dir |
 |---|---|---|
-| `backend/` | FastAPI + SQLite | `.venv/Scripts/python.exe main.py` → :5000 |
+| `backend/` | FastAPI + Postgres | `.venv/Scripts/python.exe main.py` → :5000 |
 | `frontend/` | Vite + React + TS | `npm run dev` → :3000 |
 
 Each has its own `CLAUDE.md` with the detail that matters for working in it —

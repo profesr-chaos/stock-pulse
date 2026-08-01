@@ -1,10 +1,23 @@
 # docker compose up
-#
-# The volume is the ./data *directory*, not the .db file: WAL mode writes
-# sibling -wal and -shm files, and a single-file bind mount cannot see them.
-# Both containers share it, which is fine — WAL plus a busy timeout handles one
-# writer at a time.
 services:
+  db:
+    image: postgres:18-alpine
+    container_name: stocky_db
+    environment:
+      POSTGRES_USER: stocky
+      POSTGRES_PASSWORD: stocky
+      POSTGRES_DB: stocky
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No published port: only the two app containers need it, which is also why
+    # the password above is a placeholder rather than a secret.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stocky -d stocky"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   api:
     build: .
     container_name: stocky_api
@@ -14,10 +27,11 @@ services:
     env_file:
       - .env
     environment:
-      STOCKY_DB: /app/data/stocky.db
+      STOCKY_DB_DSN: postgresql://stocky:stocky@db:5432/stocky
       STOCKY_HOST: 0.0.0.0        # inside the container; published on loopback
-    volumes:
-      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
   scheduler:
@@ -27,9 +41,11 @@ services:
     env_file:
       - .env
     environment:
-      STOCKY_DB: /app/data/stocky.db
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
+      STOCKY_DB_DSN: postgresql://stocky:stocky@db:5432/stocky
     depends_on:
-      - api
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

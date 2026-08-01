@@ -2,7 +2,7 @@
 
 News and prices for the stocks you follow, scraped from free public sources.
 No API keys, no accounts, no subscription tiers — a single-user local tool.
-FastAPI and SQLite.
+FastAPI and Postgres.
 
 Two things it has to do well:
 
@@ -14,7 +14,14 @@ Two things it has to do well:
 
 ## Getting started
 
-Python 3.12 (torch, if you enable FinBERT, has no 3.13+ wheels here).
+Python 3.12 (torch, if you enable FinBERT, has no 3.13+ wheels here) and
+**Postgres 18 or newer** — surrogate keys default to the built-in `uuidv7()`,
+which arrived in 18 and has no extension fallback. `docker compose up` brings
+its own; locally:
+
+```bash
+createdb stocky            # STOCKY_DB_DSN if it isn't postgres@localhost/stocky
+```
 
 ```bash
 py -3.12 -m venv .venv
@@ -25,9 +32,37 @@ python main.py            # API on http://127.0.0.1:5000, docs at /docs
 python scheduler.py       # second terminal, optional — background refreshes
 ```
 
-The database migrates itself on start: an older `stocky.db` in the repo root
-moves to `data/stocky.db`, dead auth tables are dropped, per-user follows fold
-into the single watchlist, and RFC-822 dates are rewritten to ISO 8601.
+Tables are created on start and creating them is idempotent, so the API and the
+scheduler racing each other is fine. There is no migration framework: the schema
+is one `CREATE TABLE IF NOT EXISTS` block in `db/connection.py`, and a column
+change means editing that block and applying the `ALTER` yourself.
+
+### Coming from the SQLite build
+
+`import_sqlite.py` moves an old `data/stocky.db` across, ids and all:
+
+```bash
+python import_sqlite.py [path/to/stocky.db]
+```
+
+Once, into an empty database — it refuses if the target already holds rows,
+because a silent double-import is worse than an error. Delete the script and the
+`.db` once you trust the result.
+
+Rows get **new** ids: the old ones were 32-bit integers and the new ones are
+UUIDv7, so there is nothing to carry over. Nothing outside the database holds a
+news id, so this costs nothing.
+
+### Keys
+
+Surrogate keys are UUIDv7 (`id UUID PRIMARY KEY DEFAULT uuidv7()`), chosen over
+v4 because the timestamp sits in the leading bytes: ids sort chronologically,
+inserts land at the right-hand edge of the B-tree instead of scattering across
+it, and `ORDER BY publish_time DESC, id DESC` stays a meaningful tiebreaker.
+
+One API-visible consequence: `/news/{id}` answers **422** for an unparseable id
+where the integer version answered 404. A well-formed id that isn't there is
+still 404.
 
 `/health` reports per-host scraper stats — the quickest way to see whether a
 source is being throttled or has had its circuit opened.
@@ -226,7 +261,8 @@ Everything has a working default. No key is required.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `STOCKY_DB` | `data/stocky.db` | Database path |
+| `STOCKY_DB_DSN` | `postgresql://postgres@localhost:5432/stocky` | Postgres connection string |
+| `STOCKY_DB_POOL_SIZE` | `10` | Max pooled connections |
 | `STOCKY_HOST` / `STOCKY_PORT` | `127.0.0.1` / `5000` | Bind address |
 | `STOCKY_CORS_ORIGINS` | localhost 3000/5173/8080 | Allow-list |
 | `STOCKY_BACKFILL_DAYS` | `30` | History pulled for a new follow |
@@ -253,13 +289,17 @@ Everything has a working default. No key is required.
 ## Tests
 
 ```bash
+createdb stocky_test   # once; STOCKY_TEST_DSN overrides the default
 poetry run pytest      # 428 tests, no network access
 ```
 
 Nothing in the suite touches a third party. The scraper is driven through
 `httpx.MockTransport` with an injected clock, so the rate limiter, backoff and
 circuit breaker are tested exactly and instantly. Parsers run against captured
-payloads; the API runs over a temporary SQLite file.
+payloads; the API runs over a real Postgres, truncated between tests — which is
+the point, since a SQLite stand-in would no longer be testing the dialect the
+app actually speaks. **The test database is wiped, so never aim `STOCKY_TEST_DSN`
+at the real one.**
 
 ## Known limitations
 

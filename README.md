@@ -1,8 +1,8 @@
 # Stocky
 
-News and prices for the handful of companies you actually follow, pulled from
-free public sources. No API keys, no accounts, no subscription tiers, it runs
-on your own machine and answers to you.
+Best way to get free and simple news and prices for the handful of companies
+you actually follow, pulled from free public sources. No API keys, no accounts,
+no subscription tiers, it runs on your own machine and answers to you.
 
 ## Running it
 

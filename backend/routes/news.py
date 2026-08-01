@@ -1,15 +1,29 @@
 """The news feed."""
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, HTTPException, Query
 
 import db
 from normalize import days_ago_iso, parse_datetime, to_iso
 from services import ai_service
 
-from .schemas import AiSummary, NewsArticle, NewsList, parse_symbols, require_symbol, to_news
+from .schemas import (
+    AiSummary,
+    EventList,
+    NewsArticle,
+    NewsList,
+    parse_symbols,
+    require_symbol,
+    to_event,
+    to_news,
+)
 
 router = APIRouter(prefix="/news", tags=["News"])
+# Its own router, not a /news subpath: an event is a judgement about a set of
+# articles, not one of them, and /news/{news_id} would shadow /news/events.
+events_router = APIRouter(prefix="/events", tags=["Events"])
 
 
 @router.get("", response_model=NewsList)
@@ -21,6 +35,7 @@ def feed(
     days: int = Query(14, ge=1, le=365),
     sentiment: str | None = Query(None, pattern="^(positive|negative|neutral)$"),
     relevance: str | None = Query(None, pattern="^(direct|related)$"),
+    impact: str | None = Query(None, pattern="^(high|medium|low)$"),
     sort: str = Query("recent", pattern="^(recent|sentiment|coverage|symbol)$"),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -75,6 +90,7 @@ def feed(
         since=since_iso,
         sentiment=sentiment,
         relevance=relevance,
+        impact=impact,
         query=q,
         sort=sort,
         limit=limit,
@@ -143,7 +159,7 @@ def sources(symbols: str | None = Query(None), days: int = Query(14, ge=1, le=90
 
 
 @router.get("/{news_id}", response_model=NewsArticle)
-def article(news_id: int):
+def article(news_id: UUID):
     row = db.news.get_news_by_id(news_id)
     if not row:
         raise HTTPException(status_code=404, detail="Article not found")
@@ -151,7 +167,7 @@ def article(news_id: int):
 
 
 @router.post("/{news_id}/ai-summary", response_model=AiSummary)
-def article_ai_summary(news_id: int):
+def article_ai_summary(news_id: UUID):
     """Summarise one article. POST because it can spend tokens."""
     if not ai_service.available():
         raise HTTPException(status_code=503, detail="AI summaries need a DSEEK API key")
@@ -178,3 +194,23 @@ def stock_ai_summary(symbol: str, days: int = Query(7, ge=1, le=30)):
     return AiSummary(
         symbol=result["symbol"], ai_summary=result["ai_summary"], cached=result["cached"]
     )
+
+
+@events_router.get("", response_model=EventList)
+def events(
+    symbols: str | None = Query(None, description="Comma-separated. Defaults to the watchlist."),
+    days: int = Query(7, ge=1, le=90),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Materially new developments, newest first.
+
+    An empty result is a real answer, not an error: it means nothing new
+    happened for these stocks in the window, which is what the feed alone could
+    never say. Defaults to the watchlist, like the feed.
+    """
+    wanted = parse_symbols(symbols) if symbols else db.watchlist.get_symbols()
+    if not wanted:
+        return EventList(results=[])
+
+    rows = db.events.get_events(wanted, since=days_ago_iso(days), limit=limit)
+    return EventList(results=[to_event(r) for r in rows])

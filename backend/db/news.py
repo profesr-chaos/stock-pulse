@@ -9,16 +9,21 @@ deduplication now happens per stock in services/dedup.py before we get here.
 """
 from __future__ import annotations
 
+from uuid import UUID
+
 from normalize import days_ago_iso
 
-from .connection import get_connection, one, rows
+from .connection import executemany, get_connection, one, rows
 
-_ALLOWED_UPDATE_FIELDS = frozenset({"sentiment", "ai_summary", "image", "description", "url", "source", "source_domain"})
+_ALLOWED_UPDATE_FIELDS = frozenset({"sentiment", "ai_summary", "image", "description", "url", "source", "source_domain", "impact"})
+
+# 16 columns per row against Postgres' 65535-parameter ceiling.
+_INSERT_CHUNK = 500
 
 
 # ── Write ────────────────────────────────────────────────────────────────
 
-def insert_news_many(articles: list[dict]) -> list[int]:
+def insert_news_many(articles: list[dict]) -> list[UUID]:
     """Insert prepared articles, skipping ones already stored for that stock.
 
     Each article must carry: short_name, title, title_key, url, url_hash,
@@ -27,82 +32,96 @@ def insert_news_many(articles: list[dict]) -> list[int]:
     if not articles:
         return []
 
-    inserted: list[int] = []
+    # Multi-row INSERTs rather than one statement per article: each statement is
+    # a network round trip now, and a backfill stores hundreds at a time.
+    # DO NOTHING covers duplicates *within* a batch too, which the old
+    # row-at-a-time loop leaned on the unique index for.
+    #
+    # Chunked because the wire protocol caps a statement at 65535 bind
+    # parameters — at 16 columns that is 4095 rows, which a month-long backfill
+    # of a heavily covered ticker could plausibly reach.
+    inserted: list[UUID] = []
     with get_connection() as conn:
-        for a in articles:
-            cur = conn.execute("""
-                INSERT OR IGNORE INTO news (
+        for start in range(0, len(articles), _INSERT_CHUNK):
+            chunk = articles[start:start + _INSERT_CHUNK]
+            params: list = []
+            for a in chunk:
+                params += [
+                    a["short_name"], a["source"], a.get("source_url"), a.get("source_domain"),
+                    a.get("source_country"), a["source_type"], a.get("lang", "en"),
+                    a["publish_time"], a["url"], a["url_hash"], a.get("image"),
+                    a["title"], a.get("title_key", ""), a.get("description"),
+                    a.get("sentiment"), a.get("relevance", "direct"),
+                ]
+            values = ",".join(["(" + ",".join(["%s"] * 16) + ")"] * len(chunk))
+            cur = conn.execute(f"""
+                INSERT INTO news (
                     short_name, source, source_url, source_domain, source_country,
                     source_type, lang, publish_time, url, url_hash, image,
                     title, title_key, description, sentiment, relevance
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                a["short_name"], a["source"], a.get("source_url"), a.get("source_domain"),
-                a.get("source_country"), a["source_type"], a.get("lang", "en"),
-                a["publish_time"], a["url"], a["url_hash"], a.get("image"),
-                a["title"], a.get("title_key", ""), a.get("description"),
-                a.get("sentiment"), a.get("relevance", "direct"),
-            ))
-            if cur.rowcount:
-                inserted.append(cur.lastrowid)
+                ) VALUES {values}
+                ON CONFLICT (short_name, url_hash) DO NOTHING
+                RETURNING id
+            """, params)
+            inserted += [r["id"] for r in cur.fetchall()]
     return inserted
 
 
-def set_sentiment_many(scores: dict[int, float]) -> int:
+def set_sentiment_many(scores: dict[UUID, float]) -> int:
     if not scores:
         return 0
     with get_connection() as conn:
-        cur = conn.executemany(
-            "UPDATE news SET sentiment = ? WHERE id = ?",
+        return executemany(
+            conn,
+            "UPDATE news SET sentiment = %s WHERE id = %s",
             [(score, news_id) for news_id, score in scores.items()],
         )
-        return cur.rowcount
 
 
-def update_news(news_id: int, **fields) -> bool:
+def update_news(news_id: UUID, **fields) -> bool:
     fields = {k: v for k, v in fields.items() if k in _ALLOWED_UPDATE_FIELDS}
     if not fields:
         return False
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    set_clause = ", ".join(f"{k} = %s" for k in fields)
     with get_connection() as conn:
         cur = conn.execute(
-            f"UPDATE news SET {set_clause} WHERE id = ?", [*fields.values(), news_id]
+            f"UPDATE news SET {set_clause} WHERE id = %s", [*fields.values(), news_id]
         )
         return cur.rowcount > 0
 
 
-def set_images(images: dict[int, str]) -> int:
+def set_images(images: dict[UUID, str]) -> int:
     if not images:
         return 0
     with get_connection() as conn:
-        cur = conn.executemany(
-            "UPDATE news SET image = ? WHERE id = ? AND image IS NULL",
+        return executemany(
+            conn,
+            "UPDATE news SET image = %s WHERE id = %s AND image IS NULL",
             [(url, news_id) for news_id, url in images.items()],
         )
-        return cur.rowcount
 
 
 def delete_older_than(cutoff_iso: str) -> int:
     with get_connection() as conn:
-        return conn.execute("DELETE FROM news WHERE publish_time < ?", (cutoff_iso,)).rowcount
+        return conn.execute("DELETE FROM news WHERE publish_time < %s", (cutoff_iso,)).rowcount
 
 
 # ── Read ─────────────────────────────────────────────────────────────────
 
-def get_news_by_id(news_id: int) -> dict | None:
+def get_news_by_id(news_id: UUID) -> dict | None:
     with get_connection() as conn:
-        return one(conn.execute("SELECT * FROM news WHERE id = ?", (news_id,)))
+        return one(conn.execute("SELECT * FROM news WHERE id = %s", (news_id,)))
 
 
 # Every ordering ends with `publish_time DESC, id DESC`.
 #
-# That tail is what makes offset paging safe: without a total order SQLite may
+# That tail is what makes offset paging safe: without a total order Postgres may
 # return ties in any order between two queries, so page 2 could repeat or skip
 # rows page 1 already showed. Sorting by sentiment alone puts thousands of
 # articles on identical scores — exactly the case where that breaks.
 _SORTS = {
     "recent":    "publish_time DESC, id DESC",
-    "sentiment": "sentiment IS NULL, sentiment DESC, publish_time DESC, id DESC",
+    "sentiment": "sentiment DESC NULLS LAST, publish_time DESC, id DESC",
     "symbol":    "short_name ASC, publish_time DESC, id DESC",
     # "most news articles" is a property of the stock, not the article, so it
     # ranks by how much coverage the article's ticker has in this same window.
@@ -117,6 +136,7 @@ def get_news(
     until: str | None = None,
     sentiment: str | None = None,
     relevance: str | None = None,
+    impact: str | None = None,
     query: str | None = None,
     sort: str | None = None,
     limit: int = 200,
@@ -140,16 +160,19 @@ def get_news(
     where, params = ["1=1"], []
 
     if short_names:
-        where.append(f"short_name IN ({','.join('?' * len(short_names))})")
+        where.append(f"short_name IN ({','.join(['%s'] * len(short_names))})")
         params += short_names
     if relevance:
-        where.append("relevance = ?")
+        where.append("relevance = %s")
         params.append(relevance)
+    if impact:
+        where.append("impact = %s")
+        params.append(impact)
     if since:
-        where.append("publish_time >= ?")
+        where.append("publish_time >= %s")
         params.append(since)
     if until:
-        where.append("publish_time <= ?")
+        where.append("publish_time <= %s")
         params.append(until)
     if sentiment == "positive":
         where.append("sentiment > 0.2")
@@ -160,12 +183,16 @@ def get_news(
 
     term = (query or "").strip()
     if term:
-        # LIKE with escaped wildcards: a user searching "100%" must not get
-        # every article back. ESCAPE makes \% and \_ literal.
+        # ILIKE, not LIKE: SQLite's LIKE was case-insensitive for ASCII, so a
+        # plain port to Postgres would have quietly made every search
+        # case-sensitive.
+        #
+        # Escaped wildcards: a user searching "100%" must not get every article
+        # back. ESCAPE makes \% and \_ literal.
         pattern = "%" + term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%"
         where.append(
-            "(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' "
-            "OR short_name LIKE ? ESCAPE '\\')"
+            "(title ILIKE %s ESCAPE '\\' OR description ILIKE %s ESCAPE '\\' "
+            "OR short_name ILIKE %s ESCAPE '\\')"
         )
         params += [pattern, pattern, pattern]
 
@@ -181,7 +208,7 @@ def get_news(
     with get_connection() as conn:
         return rows(conn.execute(
             f"{select} FROM news WHERE {filter_sql} "
-            f"ORDER BY {order} LIMIT ? OFFSET ?",
+            f"ORDER BY {order} LIMIT %s OFFSET %s",
             [*params, limit, offset],
         ))
 
@@ -203,10 +230,10 @@ def get_trending(
 
     where, params = ["s.price_change_percent IS NOT NULL"], []
     if short_names:
-        where.append(f"n.short_name IN ({','.join('?' * len(short_names))})")
+        where.append(f"n.short_name IN ({','.join(['%s'] * len(short_names))})")
         params += short_names
     if since:
-        where.append("n.publish_time >= ?")
+        where.append("n.publish_time >= %s")
         params.append(since)
 
     with get_connection() as conn:
@@ -223,9 +250,9 @@ def get_trending(
                 WHERE {' AND '.join(where)}
             )
             SELECT * FROM ranked
-            WHERE rn <= ?
+            WHERE rn <= %s
             ORDER BY ABS(move_percent) DESC, publish_time DESC, id DESC
-            LIMIT ?
+            LIMIT %s
         """, [*params, per_stock, limit]))
 
 
@@ -238,7 +265,7 @@ def get_recent_fingerprints(short_name: str, days: int = 7) -> list[dict]:
                    (description IS NOT NULL) AS has_description,
                    (image IS NOT NULL) AS has_image
             FROM news
-            WHERE short_name = ? AND publish_time >= ?
+            WHERE short_name = %s AND publish_time >= %s
         """, (short_name, days_ago_iso(days))))
 
 
@@ -247,7 +274,7 @@ def get_unscored(limit: int = 500) -> list[dict]:
         return rows(conn.execute("""
             SELECT id, title, description FROM news
             WHERE sentiment IS NULL
-            ORDER BY publish_time DESC LIMIT ?
+            ORDER BY publish_time DESC, id DESC LIMIT %s
         """, (limit,)))
 
 
@@ -256,7 +283,7 @@ def get_missing_images(short_names: list[str], limit: int = 12) -> list[dict]:
     links are excluded: resolving those costs a request and rarely yields one."""
     if not short_names:
         return []
-    marks = ",".join("?" * len(short_names))
+    marks = ",".join(["%s"] * len(short_names))
     with get_connection() as conn:
         return rows(conn.execute(f"""
             SELECT id, url FROM news
@@ -264,14 +291,14 @@ def get_missing_images(short_names: list[str], limit: int = 12) -> list[dict]:
               AND image IS NULL
               AND source_domain NOT IN ('news.google.com', '')
               AND source_domain IS NOT NULL
-            ORDER BY publish_time DESC LIMIT ?
+            ORDER BY publish_time DESC, id DESC LIMIT %s
         """, [*short_names, limit]))
 
 
 def count_by_stock(since: str, short_names: list[str] | None = None) -> list[dict]:
-    where, params = ["publish_time >= ?"], [since]
+    where, params = ["publish_time >= %s"], [since]
     if short_names:
-        where.append(f"short_name IN ({','.join('?' * len(short_names))})")
+        where.append(f"short_name IN ({','.join(['%s'] * len(short_names))})")
         params += short_names
     with get_connection() as conn:
         return rows(conn.execute(f"""
@@ -281,18 +308,18 @@ def count_by_stock(since: str, short_names: list[str] | None = None) -> list[dic
             FROM news
             WHERE {' AND '.join(where)}
             GROUP BY short_name
-            ORDER BY article_count DESC
+            ORDER BY article_count DESC, short_name
         """, params))
 
 
 def source_breakdown(short_names: list[str], since: str) -> list[dict]:
     if not short_names:
         return []
-    marks = ",".join("?" * len(short_names))
+    marks = ",".join(["%s"] * len(short_names))
     with get_connection() as conn:
         return rows(conn.execute(f"""
             SELECT COALESCE(source_domain, source) AS source, COUNT(*) AS article_count
             FROM news
-            WHERE short_name IN ({marks}) AND publish_time >= ?
-            GROUP BY 1 ORDER BY article_count DESC
+            WHERE short_name IN ({marks}) AND publish_time >= %s
+            GROUP BY 1 ORDER BY article_count DESC, source
         """, [*short_names, since]))

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from normalize import now_iso
 
-from .connection import get_connection, one, rows
+from .connection import executemany, get_connection, one, rows
 
 _ALLOWED_UPDATE_FIELDS = frozenset({
     "name", "type", "currency_code", "industry", "sector",
@@ -16,13 +16,13 @@ _ALLOWED_UPDATE_FIELDS = frozenset({
 
 def get_stock(short_name: str) -> dict | None:
     with get_connection() as conn:
-        return one(conn.execute("SELECT * FROM stocks WHERE short_name = ?", (short_name,)))
+        return one(conn.execute("SELECT * FROM stocks WHERE short_name = %s", (short_name,)))
 
 
 def get_stocks(short_names: list[str]) -> list[dict]:
     if not short_names:
         return []
-    marks = ",".join("?" * len(short_names))
+    marks = ",".join(["%s"] * len(short_names))
     with get_connection() as conn:
         found = rows(conn.execute(f"SELECT * FROM stocks WHERE short_name IN ({marks})", short_names))
     # preserve caller order
@@ -43,25 +43,27 @@ def search_stocks(query: str, limit: int = 25) -> list[dict]:
         return []
     prefix, contains = f"{q}%", f"%{q}%"
     with get_connection() as conn:
+        # ILIKE, not LIKE: SQLite matched ASCII case-insensitively, Postgres
+        # does not, and "tesla" has to keep finding TSLA.
         return rows(conn.execute("""
             SELECT * FROM stocks
-            WHERE short_name LIKE ? OR name LIKE ?
+            WHERE short_name ILIKE %s OR name ILIKE %s
             ORDER BY
                 CASE
-                    WHEN short_name = ?    THEN 0
-                    WHEN short_name LIKE ? THEN 1
-                    WHEN name LIKE ?       THEN 2
+                    WHEN short_name = %s    THEN 0
+                    WHEN short_name ILIKE %s THEN 1
+                    WHEN name ILIKE %s       THEN 2
                     ELSE 3
                 END,
                 CASE WHEN type = 'STOCK' THEN 0 ELSE 1 END,
                 -- already resolved to a US line? that's the primary listing
                 CASE WHEN exchange IN ('NMS','NYQ','NGM','NCM','ASE','PCX','BTS') THEN 0 ELSE 1 END,
                 -- secondary European lines usually carry digits (TL0, NVD2, 6RJ0)
-                CASE WHEN short_name GLOB '*[0-9]*' THEN 1 ELSE 0 END,
+                CASE WHEN short_name ~ '[0-9]' THEN 1 ELSE 0 END,
                 LENGTH(name),
                 LENGTH(short_name) DESC,
                 short_name
-            LIMIT ?
+            LIMIT %s
         """, (prefix, contains, q.upper(), prefix, prefix, limit)))
 
 
@@ -81,13 +83,13 @@ def get_sectors(short_names: list[str] | None = None) -> list[dict]:
 
     scope, params = "", []
     if short_names is not None:
-        marks = ",".join("?" * len(short_names))
+        marks = ",".join(["%s"] * len(short_names))
         scope = f"AND short_name IN ({marks})"
         params = list(short_names)
 
     with get_connection() as conn:
         return rows(conn.execute(f"""
-            SELECT sector AS sector, 'group' AS level, NULL AS group_name,
+            SELECT sector AS sector, 'group' AS level, NULL::text AS group_name,
                    COUNT(*) AS stock_count
             FROM stocks
             WHERE sector IS NOT NULL AND sector != '' {scope}
@@ -110,12 +112,12 @@ def symbols_in_sector(sector: str, short_names: list[str] | None = None) -> list
     column too, so "Industrials" works as well as "Aerospace & Defense"."""
     if not sector:
         return []
-    where = ["(industry = ? OR sector = ?)"]
+    where = ["(industry = %s OR sector = %s)"]
     params: list = [sector, sector]
     if short_names is not None:
         if not short_names:
             return []
-        where.append(f"short_name IN ({','.join('?' * len(short_names))})")
+        where.append(f"short_name IN ({','.join(['%s'] * len(short_names))})")
         params += short_names
 
     with get_connection() as conn:
@@ -133,7 +135,7 @@ def get_unresolved(short_names: list[str]) -> list[dict]:
     """Watchlist entries whose best listing has never been resolved."""
     if not short_names:
         return []
-    marks = ",".join("?" * len(short_names))
+    marks = ",".join(["%s"] * len(short_names))
     with get_connection() as conn:
         return rows(conn.execute(
             f"SELECT * FROM stocks WHERE short_name IN ({marks}) AND yahoo_symbol IS NULL",
@@ -154,9 +156,9 @@ def bulk_upsert_stocks(stocks: list[dict]) -> int:
     ]
     with get_connection() as conn:
         before = conn.execute("SELECT COUNT(*) AS c FROM stocks").fetchone()["c"]
-        conn.executemany("""
+        executemany(conn, """
             INSERT INTO stocks (short_name, name, type, currency_code)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT(short_name) DO UPDATE SET
                 name = excluded.name,
                 type = excluded.type,
@@ -171,7 +173,7 @@ def upsert_stock(short_name: str, name: str, type: str = "STOCK", currency_code:
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO stocks (short_name, name, type, currency_code)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT(short_name) DO UPDATE SET name = excluded.name
         """, (short_name, name, type, currency_code))
 
@@ -182,10 +184,10 @@ def update_stock(short_name: str, **fields) -> bool:
     fields = {k: v for k, v in fields.items() if k in _ALLOWED_UPDATE_FIELDS}
     if not fields:
         return False
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    set_clause = ", ".join(f"{k} = %s" for k in fields)
     with get_connection() as conn:
         cur = conn.execute(
-            f"UPDATE stocks SET {set_clause} WHERE short_name = ?",
+            f"UPDATE stocks SET {set_clause} WHERE short_name = %s",
             [*fields.values(), short_name],
         )
         return cur.rowcount > 0
@@ -195,8 +197,8 @@ def set_resolution(short_name: str, yahoo_symbol: str, exchange: str | None, quo
     with get_connection() as conn:
         conn.execute("""
             UPDATE stocks
-            SET yahoo_symbol = ?, exchange = ?, quote_currency = ?, resolved_at = ?
-            WHERE short_name = ?
+            SET yahoo_symbol = %s, exchange = %s, quote_currency = %s, resolved_at = %s
+            WHERE short_name = %s
         """, (yahoo_symbol, exchange, quote_currency, now_iso(), short_name))
 
 
@@ -211,10 +213,9 @@ def bulk_set_quotes(quotes: list[dict]) -> int:
         for q in quotes
     ]
     with get_connection() as conn:
-        cur = conn.executemany("""
+        return executemany(conn, """
             UPDATE stocks
-            SET price = ?, price_change = ?, price_change_percent = ?,
-                quote_currency = COALESCE(?, quote_currency), price_updated_at = ?
-            WHERE short_name = ?
+            SET price = %s, price_change = %s, price_change_percent = %s,
+                quote_currency = COALESCE(%s, quote_currency), price_updated_at = %s
+            WHERE short_name = %s
         """, payload)
-        return cur.rowcount

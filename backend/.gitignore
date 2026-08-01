@@ -47,5 +47,5 @@ desktop.ini
 .coverage
 htmlcov/
 test.py
-# Local database directory (WAL sidecar files live here too)
+# The pre-Postgres stocky.db, kept until the import is trusted (see README)
 data/

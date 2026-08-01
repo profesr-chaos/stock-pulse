@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import Headline from '@/components/Headline';
+import ImpactTag from '@/components/ImpactTag';
 import NewsImage from '@/components/NewsImage';
 import TickerTag from '@/components/TickerTag';
 import {
@@ -10,7 +11,7 @@ import {
   RIVER_PAGE_SIZE,
   type FeedFilter,
 } from '@/hooks/useStockNews';
-import { formatAgeLong } from '@/lib/format';
+import { byImpact, formatAgeLong } from '@/lib/format';
 import type { NewsArticle } from '@/types/stock';
 
 /**
@@ -86,8 +87,12 @@ const NewsRiver = ({ filter, shownUrls, onSelectSymbol, onOpenArticle }: NewsRiv
 
   const showSpinner = useMinimumDuration(isFetchingNextPage);
   const searching = isSearching(filter);
+  // Each page is triaged as it arrives — high impact to the top of its own
+  // batch — then the batches are concatenated in arrival order. Sorting after
+  // the flatten would reorder stories the reader has already scrolled past
+  // every time a new page lands.
   const articles = dedupeByUrl(
-    (data?.pages.flat() ?? []).filter(
+    (data?.pages ?? []).flatMap((page) => byImpact(page)).filter(
       // A search is its own complete list — nothing above it to repeat.
       (article) => searching || !shownUrls.has(article.url),
     ),
@@ -136,6 +141,7 @@ const NewsRiver = ({ filter, shownUrls, onSelectSymbol, onOpenArticle }: NewsRiv
                     {article.source} · {formatAgeLong(article.publish_time)}
                   </p>
                   <TickerTag symbol={article.short_name} onSelect={onSelectSymbol} />
+                  <ImpactTag impact={article.impact} />
                 </div>
               </div>
             </article>

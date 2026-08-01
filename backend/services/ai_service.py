@@ -1,13 +1,18 @@
 """Optional AI summaries via DeepSeek.
 
 Entirely optional: without a DSEEK key every endpoint here reports that
-summaries are unavailable, and the rest of the app is unaffected. Summaries are
-also the only part of Stocky that costs money, so they are cached hard and
-generated on request rather than for every article on a schedule.
+summaries are unavailable, and the rest of the app is unaffected.
+
+Summaries are cached hard and generated on request rather than for every
+article on a schedule. The event layer (services/events.py) is the one
+deliberate exception: it spends one call per stock per refresh, but only on a
+refresh that actually inserted articles, and the churn filter is what keeps
+that from being most refreshes. Pennies a day for a personal watchlist.
 """
 from __future__ import annotations
 
 import threading
+from uuid import UUID
 
 import db
 import settings
@@ -45,20 +50,47 @@ def _get_client():
             _client = OpenAI(
                 api_key=settings.DEEPSEEK_KEY,
                 base_url=settings.DEEPSEEK_BASE_URL,
-                timeout=45.0,
+                # A reasoning model is slow in wall-clock, not just in tokens:
+                # a 60-article event prompt spends ~7,000 reasoning tokens and
+                # takes ~57 seconds. The old 45s ceiling silently killed those
+                # calls, so whole refreshes came back unjudged with nothing but
+                # a timeout in the log. Every caller is a background job, so a
+                # generous ceiling costs latency we are not waiting on.
+                timeout=180.0,
             )
     return _client
 
 
-def _complete(system: str, user: str, max_tokens: int) -> dict | None:
+# deepseek-v4-flash thinks before it answers, and `max_tokens` caps the
+# reasoning and the answer *together*. How long it thinks varies run to run —
+# the same trivial prompt spent 32 reasoning tokens on one call and blew a
+# 320-token cap on the next, coming back with finish_reason='length' and empty
+# content. A real 80-article event prompt spent 6,716. So a caller's max_tokens
+# is treated as its *content* budget and the thinking gets headroom on top.
+#
+# Sized well above the worst case observed, because this is a ceiling and not a
+# reservation: tokens that are not generated are not billed, so headroom costs
+# nothing while a cap that is too tight costs the whole reply.
+_REASONING_HEADROOM = 16000
+
+
+def _complete(system: str, user: str, max_tokens: int,
+              json_mode: bool = False) -> dict | None:
+    """One completion, or None on any failure — callers degrade, never raise.
+
+    `json_mode` constrains the reply to a JSON object. It makes the response
+    parseable, not correct: callers must still validate what comes back.
+    """
+    extra = {"response_format": {"type": "json_object"}} if json_mode else {}
     try:
         response = _get_client().chat.completions.create(
-            model="deepseek-chat",
+            model=settings.DEEPSEEK_MODEL,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            max_tokens=max_tokens,
+            max_tokens=max_tokens + _REASONING_HEADROOM,
+            **extra,
         )
     except Exception as exc:
         print(f"[ai] request failed: {type(exc).__name__}: {exc}")
@@ -67,6 +99,10 @@ def _complete(system: str, user: str, max_tokens: int) -> dict | None:
     choice = (response.choices or [None])[0]
     text = (choice.message.content or "").strip() if choice else ""
     if not text:
+        # Worth saying out loud: an empty reply reads to every caller as "the
+        # AI is down", and the usual cause is the token budget, not the API.
+        reason = getattr(choice, "finish_reason", "?") if choice else "no choices"
+        print(f"[ai] empty response (finish_reason={reason})")
         return None
 
     usage = response.usage
@@ -79,7 +115,7 @@ def _complete(system: str, user: str, max_tokens: int) -> dict | None:
 
 # ── Single article ───────────────────────────────────────────────────────
 
-def summarise_article(news_id: int) -> dict | None:
+def summarise_article(news_id: UUID) -> dict | None:
     """Summarise one article, caching the result on its row."""
     if not available():
         return None

@@ -9,7 +9,7 @@ day or two without paying for a real intraday feed.
 """
 from __future__ import annotations
 
-from .connection import get_connection, one, rows
+from .connection import executemany, get_connection, one, rows
 
 
 def upsert_points(short_name: str, points: list[tuple[str, float]], interval: str = "1d") -> int:
@@ -17,18 +17,17 @@ def upsert_points(short_name: str, points: list[tuple[str, float]], interval: st
     if not points:
         return 0
     with get_connection() as conn:
-        cur = conn.executemany("""
+        return executemany(conn, """
             INSERT INTO prices (short_name, ts, close, interval)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT(short_name, ts, interval) DO UPDATE SET close = excluded.close
         """, [(short_name, ts, close, interval) for ts, close in points if close is not None])
-        return cur.rowcount
 
 
 def get_history(short_name: str, since: str, interval: str | None = None) -> list[dict]:
-    where, params = ["short_name = ?", "ts >= ?"], [short_name, since]
+    where, params = ["short_name = %s", "ts >= %s"], [short_name, since]
     if interval:
-        where.append("interval = ?")
+        where.append("interval = %s")
         params.append(interval)
     with get_connection() as conn:
         return rows(conn.execute(
@@ -43,10 +42,10 @@ def get_series(short_name: str, since: str) -> list[dict]:
     with get_connection() as conn:
         return rows(conn.execute("""
             SELECT ts, close FROM prices
-            WHERE short_name = ? AND ts >= ?
+            WHERE short_name = %s AND ts >= %s
               AND (interval = '1d' OR substr(ts, 1, 10) NOT IN (
                     SELECT substr(ts, 1, 10) FROM prices
-                    WHERE short_name = ? AND interval = '1d' AND ts >= ?
+                    WHERE short_name = %s AND interval = '1d' AND ts >= %s
               ))
             ORDER BY ts ASC
         """, (short_name, since, short_name, since)))
@@ -55,7 +54,7 @@ def get_series(short_name: str, since: str) -> list[dict]:
 def latest(short_name: str) -> dict | None:
     with get_connection() as conn:
         return one(conn.execute(
-            "SELECT ts, close FROM prices WHERE short_name = ? ORDER BY ts DESC LIMIT 1",
+            "SELECT ts, close FROM prices WHERE short_name = %s ORDER BY ts DESC LIMIT 1",
             (short_name,),
         ))
 
@@ -65,11 +64,11 @@ def close_on_or_before(short_name: str, ts: str) -> dict | None:
     with get_connection() as conn:
         return one(conn.execute("""
             SELECT ts, close FROM prices
-            WHERE short_name = ? AND ts <= ?
+            WHERE short_name = %s AND ts <= %s
             ORDER BY ts DESC LIMIT 1
         """, (short_name, ts)))
 
 
 def delete_older_than(cutoff_iso: str) -> int:
     with get_connection() as conn:
-        return conn.execute("DELETE FROM prices WHERE ts < ?", (cutoff_iso,)).rowcount
+        return conn.execute("DELETE FROM prices WHERE ts < %s", (cutoff_iso,)).rowcount

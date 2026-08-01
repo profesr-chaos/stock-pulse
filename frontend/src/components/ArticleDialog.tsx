@@ -31,7 +31,7 @@ interface ArticleDialogProps {
  */
 const ArticleDialog = ({ article, onOpenChange, onSelectSymbol }: ArticleDialogProps) => {
   const summarise = useMutation({
-    mutationFn: (id: number) => getArticleAiSummary(id),
+    mutationFn: (id: string) => getArticleAiSummary(id),
   });
 
   // Prefer whatever the article already carries; the mutation result is only
