@@ -190,7 +190,33 @@ CREATE TABLE IF NOT EXISTS events (
 -- on an old database needs its own idempotent statement or the app runs on the
 -- old shape while the tests pass.
 ALTER TABLE news ADD COLUMN IF NOT EXISTS impact TEXT;
+
+-- Change notification for the /ws push channel (routes/ws.py).
+--
+-- In the database rather than the application because the writes come from
+-- more than one process: the scheduler stores prices and news while the API
+-- serves requests, and a trigger catches both without either knowing the
+-- socket exists. It is also the only version that cannot drift — no write path
+-- can forget to announce itself.
+--
+-- FOR EACH STATEMENT, not FOR EACH ROW: insert_news_many stores up to 500
+-- articles per statement, and row-level triggers would turn one refresh into
+-- hundreds of notifications and hundreds of client re-fetches.
+CREATE OR REPLACE FUNCTION stocky_notify_changed() RETURNS trigger AS $fn$
+BEGIN
+    PERFORM pg_notify('stocky_changed', '');
+    RETURN NULL;
+END;
+$fn$ LANGUAGE plpgsql;
 """
+
+# CREATE OR REPLACE TRIGGER needs PG 14+; the schema already requires 18 for
+# uuidv7(), and it saves a DROP/CREATE dance to stay idempotent.
+_TRIGGERS = "".join(f"""
+CREATE OR REPLACE TRIGGER {table}_changed
+AFTER INSERT OR UPDATE OR DELETE ON {table}
+FOR EACH STATEMENT EXECUTE FUNCTION stocky_notify_changed();
+""" for table in ("stocks", "news", "prices", "watchlist", "events"))
 
 _INDEXES = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_stocks_short_name ON stocks(short_name);
@@ -212,3 +238,4 @@ def create_tables() -> None:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_ID,))
         conn.execute(_SCHEMA)
         conn.execute(_INDEXES)
+        conn.execute(_TRIGGERS)

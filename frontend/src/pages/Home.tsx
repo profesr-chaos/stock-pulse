@@ -15,6 +15,7 @@ import {
   useTrendingNews,
   type FeedFilter,
 } from '@/hooks/useStockNews';
+import { useLiveUpdates } from '@/hooks/useLiveUpdates';
 import { useWatchlist } from '@/hooks/useWatchlist';
 import type { NewsArticle } from '@/types/stock';
 
@@ -23,6 +24,7 @@ const EditWatchlistDialog = lazy(() => import('@/components/EditWatchlistDialog'
 const ArticleDialog = lazy(() => import('@/components/ArticleDialog'));
 
 const Home = () => {
+  useLiveUpdates();
   const { watchlist, addStock, removeStock, error } = useWatchlist();
   const [filter, setFilter] = useState<FeedFilter>(DEFAULT_FILTER);
   const [editing, setEditing] = useState(false);

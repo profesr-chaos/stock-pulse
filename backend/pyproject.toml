@@ -21,6 +21,8 @@ dependencies = [
     "rapidfuzz (>=3.14.3,<4.0.0)",
     "vadersentiment (>=3.3.2,<4.0.0)",
     "apscheduler (>=3.11.2,<4.0.0)",
+    # Bare uvicorn ships no WebSocket protocol; /ws needs one at runtime.
+    "websockets (>=15.0,<16.0)",
     "python-dotenv (>=1.2.2,<2.0.0)",
     # `binary` ships libpq so there is no C toolchain or PATH hunt on Windows;
     # `pool` because a Postgres connect is a round trip, unlike opening a file.
