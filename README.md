@@ -1,5 +1,7 @@
 # Stocky
 
+<img width="1596" height="876" alt="image" src="https://github.com/user-attachments/assets/c86951d6-631d-436a-8d6b-a3b2959a4a69" />
+
 News and prices for the handful of companies you actually follow, scraped from
 free public sources. No accounts, no subscription tier, no required API key. It
 runs on your own machine and the watchlist stays there.
