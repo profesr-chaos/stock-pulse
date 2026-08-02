@@ -186,6 +186,15 @@ CREATE TABLE IF NOT EXISTS events (
     tokens_total     INTEGER NOT NULL DEFAULT 0
 );
 
+-- Runtime feature flags set from the UI (db/flags.py). Deliberately not in
+-- the notify trigger list below: a flag change is answered to the client that
+-- made it, and pushing it would make every other tab re-fetch the whole feed
+-- because someone toggled a checkbox.
+CREATE TABLE IF NOT EXISTS app_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL             -- '1' | '0'
+);
+
 -- CREATE TABLE IF NOT EXISTS leaves an existing table alone, so a new column
 -- on an old database needs its own idempotent statement or the app runs on the
 -- old shape while the tests pass.

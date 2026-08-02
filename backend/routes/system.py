@@ -11,12 +11,49 @@ import db
 import jobs
 import settings
 from normalize import days_ago_iso
-from services import ai_service, sentiment_service
+from services import ai_service, events, sentiment_service
 from services.http_client import scraper
 
-from .schemas import Ok
+from .schemas import AppConfig, AppConfigUpdate, Ok
 
 router = APIRouter(tags=["System"])
+
+
+def _ai_state() -> str:
+    if not settings.ai_enabled():
+        return "disabled (no DSEEK key)"
+    if ai_service.key_rejected():
+        return "disabled (key rejected)"
+    return "enabled" if ai_service.available() else "disabled (switched off)"
+
+
+def _config() -> AppConfig:
+    flags = db.flags.get_all()
+    return AppConfig(
+        llmScraping=flags[db.flags.LLM_SCRAPING],
+        aiSummaries=flags[db.flags.AI_SUMMARIES],
+        keyPresent=settings.ai_enabled(),
+        keyRejected=ai_service.key_rejected(),
+        scrapingGradesImpact=events.enabled(),
+        summariesAvailable=ai_service.available(),
+    )
+
+
+@router.get("/config", response_model=AppConfig)
+def get_config():
+    """The AI toggles. Nothing here gates scraping itself — only the grading."""
+    return _config()
+
+
+@router.put("/config", response_model=AppConfig)
+def put_config(update: AppConfigUpdate):
+    """Set either flag. Returns the whole resulting state, so the client never
+    has to guess what the other one is now."""
+    if update.llmScraping is not None:
+        db.flags.set_flag(db.flags.LLM_SCRAPING, update.llmScraping)
+    if update.aiSummaries is not None:
+        db.flags.set_flag(db.flags.AI_SUMMARIES, update.aiSummaries)
+    return _config()
 
 
 @router.get("/health")
@@ -31,7 +68,8 @@ def health():
         "watchlist": watched,
         "articles_last_24h": sum(r["article_count"] for r in recent),
         "sentiment_backend": sentiment_service.backend(),
-        "ai_summaries": "enabled" if ai_service.available() else "disabled (no DSEEK key)",
+        "ai_summaries": _ai_state(),
+        "impact_grading": "enabled" if events.enabled() else "disabled",
         "scrapers": scraper.stats(),
     }
 

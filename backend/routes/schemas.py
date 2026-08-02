@@ -136,6 +136,27 @@ class Ok(BaseModel):
     ok: bool = True
 
 
+class AppConfig(BaseModel):
+    """What the user asked for, and what is actually in effect.
+
+    The two differ whenever there is no usable key: the flag can be on while
+    the feature is inert. Sending both means the UI can say "off because you
+    switched it off" rather than showing a toggle that appears to do nothing.
+    """
+    llmScraping: bool
+    aiSummaries: bool
+    keyPresent: bool
+    keyRejected: bool
+    scrapingGradesImpact: bool      # llmScraping AND a usable key
+    summariesAvailable: bool        # aiSummaries AND a usable key
+
+
+class AppConfigUpdate(BaseModel):
+    """Both optional: a PUT naming one flag must not reset the other."""
+    llmScraping: Optional[bool] = None
+    aiSummaries: Optional[bool] = None
+
+
 # ── Mappers ──────────────────────────────────────────────────────────────
 
 def to_stock(row: dict) -> Stock:

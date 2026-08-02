@@ -93,7 +93,8 @@ class _Stub:
 def stub(monkeypatch):
     stub = _Stub()
     monkeypatch.setattr(ai_service, "_complete", stub)
-    monkeypatch.setattr(ai_service, "available", lambda: True)
+    # key_usable, not available: the summaries toggle must not reach detection.
+    monkeypatch.setattr(ai_service, "key_usable", lambda: True)
     return stub
 
 
@@ -226,7 +227,7 @@ class TestDetectCannotBreakARefresh:
         assert [e["headline"] for e in written] == ["Apple recalls chargers"]
 
     def test_no_api_key_is_a_no_op(self, temp_db, stub, monkeypatch):
-        monkeypatch.setattr(ai_service, "available", lambda: False)
+        monkeypatch.setattr(ai_service, "key_usable", lambda: False)
         ids = _articles(count=2)
 
         assert events.detect("AAPL", ids) == []

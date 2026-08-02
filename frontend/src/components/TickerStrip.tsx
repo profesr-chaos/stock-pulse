@@ -1,3 +1,6 @@
+import { Sparkles } from 'lucide-react';
+
+import Masthead from '@/components/Masthead';
 import WatchlistWheel from '@/components/WatchlistWheel';
 import { changeClass, formatPercent, formatPrice } from '@/lib/format';
 import type { Stock } from '@/types/stock';
@@ -6,6 +9,9 @@ interface TickerStripProps {
   stocks: Stock[];
   onEdit: () => void;
   onSelect: (symbol: string) => void;
+  onOpenAiSettings: () => void;
+  /** LLM grading is actually running — drives the masthead flicker. */
+  grading: boolean;
 }
 
 /**
@@ -16,7 +22,13 @@ interface TickerStripProps {
  * 30ms and re-rendered the whole strip to move it one pixel; this runs on the
  * compositor and stops entirely under `prefers-reduced-motion`.
  */
-const TickerStrip = ({ stocks, onEdit, onSelect }: TickerStripProps) => {
+const TickerStrip = ({
+  stocks,
+  onEdit,
+  onSelect,
+  onOpenAiSettings,
+  grading,
+}: TickerStripProps) => {
   const quoted = stocks.filter((s) => s.price !== null);
   // Enough of a lap that a long watchlist doesn't sprint past.
   const duration = Math.max(30, quoted.length * 6);
@@ -62,9 +74,17 @@ const TickerStrip = ({ stocks, onEdit, onSelect }: TickerStripProps) => {
           )}
         </div>
 
-        <span className="shrink-0 border-l border-rule pl-3 font-serif text-base font-bold tracking-tight text-ink-strong md:pl-4 md:text-lg">
-          Stock&nbsp;Pulse
-        </span>
+        <Masthead flicker={grading} />
+
+        <button
+          type="button"
+          onClick={onOpenAiSettings}
+          aria-label="AI features"
+          title={grading ? 'LLM grading is on' : 'LLM grading is off'}
+          className="shrink-0 p-1 text-ink-muted hover:text-ink-strong"
+        >
+          <Sparkles className="h-4 w-4" />
+        </button>
       </div>
     </div>
   );

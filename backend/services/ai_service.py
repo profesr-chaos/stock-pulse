@@ -3,6 +3,14 @@
 Entirely optional: without a DSEEK key every endpoint here reports that
 summaries are unavailable, and the rest of the app is unaffected.
 
+A *rejected* key is treated as no key at all. Having one is worse than having
+none if we keep using it: `ai_enabled()` only checks that the string is
+non-empty, so an expired key left every refresh paying a full round trip per
+stock — up to the 180s ceiling below — to be told 401 again. The scrape still
+finished, but an hourly job that took seconds now took minutes. So the first
+authentication failure trips `_key_rejected` and the process stops calling out
+until it is restarted or the flag is cleared.
+
 Summaries are cached hard and generated on request rather than for every
 article on a schedule. The event layer (services/events.py) is the one
 deliberate exception: it spends one call per stock per refresh, but only on a
@@ -36,8 +44,35 @@ DIGEST_PROMPT = (
 )
 
 
+# Tripped by the first 401/403. Process-local on purpose: a restart is how you
+# retry a key you have just fixed, and persisting it would mean a bad key that
+# has since been corrected stays disabled with no obvious way back.
+_key_rejected = False
+
+
+def key_usable() -> bool:
+    """A key exists and the provider has not rejected it.
+
+    The shared plumbing behind both features, and deliberately not the same
+    question as `available()` — event detection must not be switched off by the
+    summaries toggle.
+    """
+    return settings.ai_enabled() and not _key_rejected
+
+
+def key_rejected() -> bool:
+    return _key_rejected
+
+
+def reset_key_state() -> None:
+    """Re-arm after the key has been changed. Also what tests use to isolate."""
+    global _key_rejected
+    _key_rejected = False
+
+
 def available() -> bool:
-    return settings.ai_enabled()
+    """Can we generate a summary right now — key usable *and* the user wants them."""
+    return key_usable() and db.flags.get_flag(db.flags.AI_SUMMARIES)
 
 
 def _get_client():
@@ -73,6 +108,11 @@ def _get_client():
 # nothing while a cap that is too tight costs the whole reply.
 _REASONING_HEADROOM = 16000
 
+# 401 expired/revoked/typo'd, 403 valid but not entitled. Both mean no amount
+# of retrying helps. 429 and 5xx are explicitly *not* here — those are worth
+# trying again on the next refresh.
+_AUTH_FAILURES = frozenset({401, 403})
+
 
 def _complete(system: str, user: str, max_tokens: int,
               json_mode: bool = False) -> dict | None:
@@ -81,6 +121,8 @@ def _complete(system: str, user: str, max_tokens: int,
     `json_mode` constrains the reply to a JSON object. It makes the response
     parseable, not correct: callers must still validate what comes back.
     """
+    global _key_rejected
+
     extra = {"response_format": {"type": "json_object"}} if json_mode else {}
     try:
         response = _get_client().chat.completions.create(
@@ -93,7 +135,14 @@ def _complete(system: str, user: str, max_tokens: int,
             **extra,
         )
     except Exception as exc:
-        print(f"[ai] request failed: {type(exc).__name__}: {exc}")
+        # Read off the exception rather than catching openai's classes: the SDK
+        # renames them between majors, and every HTTP error it raises carries
+        # the status. A missing attribute just means "not an auth error".
+        if getattr(exc, "status_code", None) in _AUTH_FAILURES:
+            _key_rejected = True
+            print(f"[ai] key rejected ({exc}); disabling AI until restart")
+        else:
+            print(f"[ai] request failed: {type(exc).__name__}: {exc}")
         return None
 
     choice = (response.choices or [None])[0]
