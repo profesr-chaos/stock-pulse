@@ -83,8 +83,33 @@
   .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .line-clamp-4 { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 
+  /* Masthead flicker — on while the scraper is grading articles with the LLM.
+
+     A CSS animation over per-letter delays, not a setInterval writing colours
+     into React state. Eleven letters at ~8fps would be ~90 re-renders a second
+     of a component that sits above the whole page. This runs off the main
+     thread and costs nothing when the tab is backgrounded.
+
+     steps(1, end) is what makes it flicker rather than fade: the colour jumps
+     between stops instead of interpolating through the muddy midpoints. */
+  @keyframes rgb-flicker {
+    0%   { color: #FF0040; }
+    16%  { color: #00C2FF; }
+    33%  { color: #FFD400; }
+    50%  { color: #00FF88; }
+    66%  { color: #B400FF; }
+    83%  { color: #FF6A00; }
+    100% { color: #00E5FF; }
+  }
+
+  .animate-rgb-flicker {
+    animation: rgb-flicker var(--flicker-duration, 1.1s) steps(1, end) infinite;
+    animation-delay: var(--flicker-delay, 0s);
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .animate-marquee {
+    .animate-marquee,
+    .animate-rgb-flicker {
       animation: none !important;
     }
   }

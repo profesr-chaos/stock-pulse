@@ -18,6 +18,9 @@ path here returns `[]` and logs. Nothing raises.
 
 Cost is controlled upstream, not here — services/dedup.py kills churn before it
 reaches a prompt, and the call only happens when a refresh inserted something.
+The user can also switch this off outright (`db.flags.LLM_SCRAPING`), which
+costs the feed its impact tiers and nothing else: articles are stored before
+this runs, so scraping with the LLM off is the same scrape minus the judgement.
 """
 from __future__ import annotations
 
@@ -67,13 +70,27 @@ SYSTEM_PROMPT = (
 )
 
 
+def enabled() -> bool:
+    """Whether a refresh should spend a call grading what it just stored.
+
+    Checks the scraping flag, never the summaries one: switching off the silent
+    per-refresh spend must leave the on-demand summary button working.
+    """
+    return ai_service.key_usable() and db.flags.get_flag(db.flags.LLM_SCRAPING)
+
+
 def detect(short_name: str, inserted_ids: list[UUID]) -> list[dict]:
     """Judge a batch of newly stored articles against what we already hold.
 
     Returns the events written. Also stamps `impact` on every article in the
     batch: an event's tier for the articles backing it, 'low' for the rest.
+
+    Off — no key, a rejected key, or the flag switched off — is a no-op, not a
+    failure: articles are already stored by the time this runs, and they keep
+    their NULL impact so a later refresh with the LLM back on can still judge
+    them.
     """
-    if not ai_service.available() or not inserted_ids:
+    if not enabled() or not inserted_ids:
         return []
 
     articles = _fetch(inserted_ids)

@@ -5,9 +5,13 @@ import NewsRiver from '@/components/NewsRiver';
 import PinnedTickers from '@/components/PinnedTickers';
 import SearchBar from '@/components/SearchBar';
 import TickerStrip from '@/components/TickerStrip';
+import Toast from '@/components/Toast';
 import TrendingNews from '@/components/TrendingNews';
 import TrendingTickers from '@/components/TrendingTickers';
 import { API_BASE_URL } from '@/config/api';
+import { useAppConfig } from '@/hooks/useAppConfig';
+import { useToast } from '@/hooks/useToast';
+import { describeChange, type ConfigUpdate } from '@/services/configApi';
 import {
   DEFAULT_FILTER,
   isSearching,
@@ -22,6 +26,7 @@ import type { NewsArticle } from '@/types/stock';
 // Behind a click, so they stay out of the initial bundle entirely.
 const EditWatchlistDialog = lazy(() => import('@/components/EditWatchlistDialog'));
 const ArticleDialog = lazy(() => import('@/components/ArticleDialog'));
+const AiSettingsDialog = lazy(() => import('@/components/AiSettingsDialog'));
 
 const Home = () => {
   useLiveUpdates();
@@ -29,6 +34,24 @@ const Home = () => {
   const [filter, setFilter] = useState<FeedFilter>(DEFAULT_FILTER);
   const [editing, setEditing] = useState(false);
   const [reading, setReading] = useState<NewsArticle | null>(null);
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
+
+  const { config, saving, update } = useAppConfig();
+  const { message: toast, show: showToast, dismiss: dismissToast } = useToast();
+
+  // The toast reports what the server confirmed, not what was clicked: a write
+  // that failed must not announce a change that did not happen.
+  const changeAiSetting = useCallback(
+    async (patch: ConfigUpdate) => {
+      try {
+        const message = describeChange(patch, await update(patch));
+        if (message) showToast(message);
+      } catch {
+        showToast('Could not save that — is the API running?');
+      }
+    },
+    [update, showToast],
+  );
 
   const searching = isSearching(filter);
 
@@ -76,7 +99,13 @@ const Home = () => {
 
   return (
     <div className="min-h-screen bg-paper">
-      <TickerStrip stocks={watchlist} onEdit={() => setEditing(true)} onSelect={selectSymbol} />
+      <TickerStrip
+        stocks={watchlist}
+        onEdit={() => setEditing(true)}
+        onSelect={selectSymbol}
+        onOpenAiSettings={() => setAiSettingsOpen(true)}
+        grading={config?.scrapingGradesImpact ?? false}
+      />
       <SearchBar filter={filter} onChange={change} onClear={clear} />
 
       <main className="mx-auto max-w-[1600px] px-3 py-6 md:px-5">
@@ -193,6 +222,27 @@ const Home = () => {
           />
         </Suspense>
       )}
+
+      {aiSettingsOpen && (
+        <Suspense fallback={null}>
+          <AiSettingsDialog
+            open={aiSettingsOpen}
+            onOpenChange={setAiSettingsOpen}
+            config={config}
+            saving={saving}
+            onToggle={changeAiSetting}
+            toast={toast}
+            onDismissToast={dismissToast}
+          />
+        </Suspense>
+      )}
+
+      {/* While the settings dialog is open it renders the toast itself, inside
+          its portal — see AiSettingsDialog. Rendering it here as well would
+          duplicate the message; rendering it only there would drop it the
+          moment the dialog closes. The message lives up here either way, so it
+          survives the handover. */}
+      {!aiSettingsOpen && <Toast message={toast} onDismiss={dismissToast} />}
     </div>
   );
 };
