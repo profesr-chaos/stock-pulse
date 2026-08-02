@@ -24,8 +24,8 @@ validation rather than a 404.
 Tests run against a real Postgres (`stocky_test`, truncated per test), so the
 suite catches dialect mistakes rather than hiding them.
 
-`.mulch/` is the predecessor knowledge store (`ml`), left in place and not
-migrated to marl.
+The `.mulch/` predecessor knowledge store (`ml`) has been removed; marl below
+is the only one.
 
 <!-- marl:start -->
 ## marl — this project's knowledge store
