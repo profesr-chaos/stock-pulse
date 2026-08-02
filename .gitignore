@@ -1,2 +1,14 @@
 .vscode/
-.claude/settings.local.json
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Local agent tooling and notes, deliberately not published
+.claude/
+.agents/
+.continue/
+.junie/
+.marl/
+CLAUDE.md
