@@ -104,7 +104,8 @@ the live scrapers rather than the stubs: 268 articles found with the LLM off and
 means judged and unremarkable, and collapsing the two would lose that
 distinction permanently.
 
-Set `DSEEK` to a DeepSeek key to enable any of it. Without a key both toggles
+Set `DSEEK` to a DeepSeek key in `backend/.env` to enable any of it. Copy
+`backend/.env.example` for the shape; every key in it is optional. Without a key both toggles
 say so in the dialog instead of pretending to work. A key the provider rejects
 with 401 or 403 latches off after the first failure, since an expired key
 otherwise made every stock in every hourly refresh pay a full round trip to be
@@ -176,4 +177,4 @@ share this one's name, so don't mistake it for this code.
 
 ## License
 
-Private, all rights reserved.
+MIT. See [LICENSE](LICENSE).

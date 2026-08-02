@@ -119,4 +119,4 @@ dynamic import as dead code rather than shipping a 386kB overlay to production.
 
 ## License
 
-Private, all rights reserved.
+MIT. See [LICENSE](../LICENSE).

@@ -24,6 +24,7 @@ createdb stocky            # STOCKY_DB_DSN if it isn't postgres@localhost/stocky
 ```
 
 ```bash
+cp .env.example .env      # optional; every key in it is optional too
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 poetry install
@@ -406,4 +407,4 @@ tickers Bing is often the only one returning anything.
 
 ## License
 
-Private, all rights reserved.
+MIT. See [LICENSE](../LICENSE).
