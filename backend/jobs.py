@@ -5,7 +5,6 @@ a job that dies halfway can simply be run again.
 """
 from __future__ import annotations
 
-import json
 import threading
 import time
 
@@ -13,7 +12,6 @@ import db
 import settings
 from normalize import days_ago_iso, markets_open
 from services import news, prices, sentiment_service
-from services.http_client import scraper
 
 # One backfill per symbol at a time. Adding a stock twice in quick succession
 # would otherwise fan out two identical month-long scrapes.
@@ -63,57 +61,6 @@ def prune() -> dict:
     articles = news.prune()
     points = db.prices.delete_older_than(days_ago_iso(400))
     return {"articles": articles, "price_points": points}
-
-
-def refresh_catalogue() -> dict:
-    """Weekly, and only if Trading212 credentials exist.
-
-    The catalogue is ~15k instruments and barely changes, so this is optional:
-    without keys the app runs happily on what is already stored.
-    """
-    if not settings.t212_enabled():
-        print("[jobs] no Trading212 credentials, skipping catalogue refresh")
-        return {"inserted": 0, "skipped": True}
-
-    instruments = _fetch_instruments()
-    if not instruments:
-        return {"inserted": 0, "skipped": True}
-
-    inserted = db.stocks.bulk_upsert_stocks(instruments)
-    print(f"[jobs] catalogue refreshed, {inserted} new instruments")
-    return {"inserted": inserted, "skipped": False}
-
-
-def _fetch_instruments() -> list[dict]:
-    import base64
-
-    token = base64.b64encode(
-        f"{settings.T212_KEY}:{settings.T212_SECRET}".encode()
-    ).decode()
-    response = scraper.get(
-        settings.T212_INSTRUMENTS_URL,
-        headers={"Authorization": f"Basic {token}", "Accept": "application/json"},
-        cache=False,
-    )
-    if not response or not response.ok:
-        print("[jobs] Trading212 instruments fetch failed")
-        return []
-    try:
-        data = json.loads(response.text)
-    except ValueError:
-        return []
-
-    allowed = {"STOCK", "ETF"}
-    return [
-        {
-            "shortName": item.get("shortName"),
-            "name": item.get("name"),
-            "type": item.get("type"),
-            "currencyCode": item.get("currencyCode"),
-        }
-        for item in data
-        if isinstance(item, dict) and item.get("type") in allowed and item.get("shortName")
-    ]
 
 
 # ── On demand ────────────────────────────────────────────────────────────

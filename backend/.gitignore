@@ -31,6 +31,10 @@ logs/
 
 # JSON data files
 *.json
+# ...except the seed catalogue, which is the one JSON file meant to ship: it is
+# what gives a fresh clone working local search. Every field in it is Yahoo's,
+# so it carries no broker identifiers (see README, "The seed file").
+!seed/catalogue.json
 
 # OS
 .DS_Store

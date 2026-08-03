@@ -28,6 +28,9 @@ TEST_DSN = os.getenv("STOCKY_TEST_DSN") or "postgresql://postgres@localhost:5432
 def _point_at_the_test_database():
     """Session-wide, and before anything can open a pool against the real DSN."""
     settings.DB_DSN = TEST_DSN
+    # The shipped seed file must never reach the test database: `client` starts
+    # the real lifespan, and ten thousand instruments would break every count.
+    settings.SEED_ON_START = False
     yield
 
 
@@ -74,7 +77,25 @@ def stocked_db(temp_db):
 
 
 @pytest.fixture
-def client(stocked_db, monkeypatch):
+def yahoo_quotes(monkeypatch):
+    """Canned Yahoo search hits, keyed by the query that returns them.
+
+    Yahoo search is a live path for the API now — it backs both the catalogue
+    miss in /stocks/search and the lookup on follow — so it is stubbed like
+    every other network call. Empty by default: a test that wants the fallback
+    populates the dict it is handed.
+    """
+    from services import yahoo
+
+    quotes: dict[str, list[dict]] = {}
+    monkeypatch.setattr(yahoo, "search", lambda q, **kw: {
+        "quotes": quotes.get((q or "").strip().upper(), []), "news": [],
+    })
+    return quotes
+
+
+@pytest.fixture
+def client(stocked_db, yahoo_quotes, monkeypatch):
     """FastAPI TestClient with all network paths stubbed out."""
     from fastapi.testclient import TestClient
 

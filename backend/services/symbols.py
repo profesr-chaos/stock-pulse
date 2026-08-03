@@ -1,20 +1,25 @@
 """Pick one canonical listing per instrument, so prices are comparable.
 
-The same company trades on many venues in many currencies. The catalogue we
-inherit from Trading212 is not a reliable guide to which one — it reports TSLA
-as an EUR instrument — so listings are resolved against Yahoo and ranked by
-exchange, preferring the deepest, most-quoted market:
+The same company trades on many venues in many currencies, and the catalogue
+does not say which one is the real market — older rows came from a Trading212
+bulk load that reported TSLA as an EUR instrument — so listings are resolved
+against Yahoo and ranked by exchange, preferring the deepest, most-quoted
+market:
 
     US primary  →  London  →  XETRA  →  rest of Europe  →  Canada
                 →  German regional  →  depositary receipts  →  everything else
 
 Resolution happens once per stock and is cached on the row.
+
+`lookup` is the other direction: Yahoo search as the source of instruments we
+have never stored, so the catalogue grows on demand instead of being bulk
+loaded.
 """
 from __future__ import annotations
 
 from rapidfuzz import fuzz
 
-from normalize import clean_symbol
+from normalize import clean_symbol, valid_symbol
 
 from . import yahoo
 
@@ -205,3 +210,41 @@ def _queries(short_name: str, name: str) -> list[str]:
     if trimmed and trimmed.lower() != short_name.lower():
         queries.append(trimmed)
     return queries
+
+
+# ── Lookup: Yahoo search as the instrument catalogue ─────────────────────
+
+# Yahoo's quoteType vocabulary → the catalogue's, so a looked-up row sorts and
+# filters next to the ones already stored. STOCK is what search_stocks ranks
+# first and what the sector panels expect.
+_CATALOGUE_TYPE = {
+    "EQUITY": "STOCK", "ETF": "ETF", "MUTUALFUND": "FUND", "INDEX": "INDEX",
+}
+
+
+def lookup(query: str, limit: int = 10) -> list[dict]:
+    """Catalogue-shaped rows from Yahoo search, for instruments we never stored.
+
+    Returns dicts keyed like a `stocks` row (not saved — the caller decides),
+    so they pass straight through `to_stock` alongside real rows.
+    """
+    hits = yahoo.search(query, quotes=limit).get("quotes") or []
+
+    rows, seen = [], set()
+    for hit in hits:
+        symbol = clean_symbol(hit.get("symbol") or "")
+        quote_type = (hit.get("quoteType") or "").upper()
+        # valid_symbol because these become short_names, and a short_name ends
+        # up interpolated into outbound scraper URLs.
+        if not valid_symbol(symbol) or symbol in seen or quote_type not in _ALLOWED_TYPES:
+            continue
+        seen.add(symbol)
+        rows.append({
+            "short_name": symbol,
+            "name": hit.get("longname") or hit.get("shortname") or symbol,
+            "type": _CATALOGUE_TYPE.get(quote_type, quote_type),
+            "exchange": hit.get("exchange"),
+            "sector": hit.get("sector"),
+            "industry": hit.get("industry"),
+        })
+    return rows
