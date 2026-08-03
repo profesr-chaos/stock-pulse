@@ -72,12 +72,15 @@ sentiment backend is live and whether AI summaries and impact grading are on.
 ## How the data is obtained
 
 Everything goes through `services/http_client.py`, one adaptive scraper shared
-by every source. Per host it keeps a token bucket whose rate ratchets *up* while
-responses stay clean and halves the moment a host answers 429/403/503. It obeys
-`Retry-After`, retries with exponential backoff and full jitter, opens a circuit
-breaker after repeated failures, and presents a stable browser fingerprint per
-host. HTTP/2 and connection reuse are on, and a five-minute response cache means
-several scrapers wanting the same feed in one refresh cost one request.
+by every source. Per host it reserves a request slot from a rate that ratchets
+*up* while responses stay clean and halves the moment a host answers
+429/403/503. Only a 2xx counts toward ratcheting up — a 404 is a final answer,
+not evidence there is headroom. It obeys `Retry-After`, retries with exponential
+backoff and full jitter, opens a circuit breaker after repeated failures, and
+presents a stable browser fingerprint per host. Connection reuse is on (HTTP/1.1
+— h2's shared hpack table is not thread-safe under the pool), and a five-minute
+response cache means several scrapers wanting the same feed in one refresh cost
+one request.
 
 Not included: proxy rotation, or anything that defeats an access control rather
 than sharing a host's capacity. Where a source pushes back, the answer is

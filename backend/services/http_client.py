@@ -18,8 +18,8 @@ How it pushes throughput without getting blocked:
   per host looks like a browser session; randomising headers on every request
   to the same host looks like exactly what it is. The fingerprint is rotated
   only when a host starts pushing back.
-* **HTTP/2 + connection reuse**, so many requests share one negotiated
-  connection instead of re-handshaking.
+* **Connection reuse** (keep-alive), so many requests share one negotiated
+  connection instead of re-handshaking. HTTP/1.1 only — see `http2=False`.
 * **Short-lived response cache**, so several scrapers wanting the same feed in
   one refresh cost one request.
 
@@ -107,6 +107,10 @@ _HOST_RATES: dict[str, tuple[float, float]] = {
 }
 _DEFAULT_RATE = (1.5, 4.0)
 _MIN_RATE = 0.2
+# How far behind "now" the slot cursor may start, i.e. how much of an idle
+# host's unused capacity is still spendable at once. Preserves the burst the
+# old token bucket allowed.
+_BURST_SECONDS = 1.0
 
 _THROTTLE_STATUSES = frozenset({403, 420, 429, 503})
 _RETRY_STATUSES = frozenset({408, 425, 500, 502, 504, 522, 524}) | _THROTTLE_STATUSES
@@ -139,12 +143,12 @@ class Fetched:
         return json.loads(self.text)
 
 
-@dataclass
+@dataclass(slots=True)
 class _HostState:
     rate: float
     max_rate: float
-    tokens: float = 1.0
-    last_refill: float = 0.0
+    # Monotonic time of the next unreserved request slot. See `_acquire`.
+    next_slot: float = 0.0
     consecutive_ok: int = 0
     consecutive_fail: int = 0
     blocked_until: float = 0.0
@@ -183,7 +187,13 @@ class Scraper:
         self._cache: dict[str, tuple[float, Fetched]] = {}
         self._cache_lock = threading.Lock()
         self._client = httpx.Client(
-            http2=True,
+            # HTTP/1.1 only. Under threads h2 multiplexes every request onto one
+            # connection whose hpack dynamic table is a deque mutated without a
+            # lock, which raises "deque mutated during iteration" mid-sweep. No
+            # host here needs h2 and nothing reads response.http_version;
+            # keep-alive still reuses connections, and the pool below then has
+            # no shared per-connection state to corrupt.
+            http2=False,
             follow_redirects=True,
             timeout=httpx.Timeout(self.timeout, connect=min(6.0, self.timeout)),
             limits=httpx.Limits(max_connections=settings.SCRAPE_CONCURRENCY * 2,
@@ -213,7 +223,7 @@ class Scraper:
         attempts = (retries if retries is not None else self.max_retries) + 1
 
         for attempt in range(attempts):
-            if not self._acquire(state, host):
+            if not self._acquire(state):
                 return None  # circuit open
 
             try:
@@ -240,7 +250,10 @@ class Scraper:
                 self._sleep(_retry_after(response) or self._backoff(attempt))
                 continue
 
-            self._on_success(state)
+            # A 404 is a real answer, not evidence we can go faster. Letting it
+            # count made miss-heavy traffic (symbols.resolve tries up to four
+            # candidates by design) probe every host up to its ceiling.
+            self._on_success(state, probe=response.is_success)
             fetched = Fetched(
                 url=str(response.url),
                 status=response.status_code,
@@ -313,39 +326,46 @@ class Scraper:
             state = self._hosts.get(host)
             if state is None:
                 start, ceiling = _HOST_RATES.get(host, _DEFAULT_RATE)
-                state = _HostState(rate=start, max_rate=ceiling, last_refill=self._clock())
+                state = _HostState(rate=start, max_rate=ceiling)
                 self._hosts[host] = state
             return state
 
-    def _acquire(self, state: _HostState, host: str) -> bool:
-        """Token-bucket wait. False means the circuit is open for this host."""
+    def _acquire(self, state: _HostState) -> bool:
+        """Reserve a slot and wait for it. False means the circuit is open.
+
+        Virtual scheduling, not a token bucket. A *count* cannot be reserved
+        without holding the lock across the sleep, so every waiter used to read
+        the same empty bucket, compute the same wait and proceed — making the
+        real rate `nominal × threads`. A *cursor* is advanced under the lock and
+        waited for outside it, so N threads take N distinct slots.
+        """
         with state.lock:
             now = self._clock()
             if state.blocked_until > now:
                 return False
-
-            # refill
-            elapsed = max(0.0, now - state.last_refill)
-            state.last_refill = now
-            state.tokens = min(state.rate, state.tokens + elapsed * state.rate)
-
-            wait = 0.0
-            if state.tokens < 1.0:
-                wait = (1.0 - state.tokens) / state.rate
-                state.tokens = 0.0
-            else:
-                state.tokens -= 1.0
+            slot = max(state.next_slot, now - _BURST_SECONDS)
+            state.next_slot = slot + 1.0 / state.rate
             state.requests += 1
 
-        if wait > 0:
-            # Jitter stops N threads from unblocking in lockstep.
-            self._sleep(wait + random.uniform(0, 0.05))
+        # No jitter: it only existed to desynchronise lockstep waiters, which
+        # distinct slots now prevent by construction.
+        if (wait := slot - now) > 0:
+            self._sleep(wait)
+            # A queue of waiters must not all land on a host that started
+            # refusing while they slept.
+            with state.lock:
+                if state.blocked_until > self._clock():
+                    return False
         return True
 
-    def _on_success(self, state: _HostState) -> None:
+    def _on_success(self, state: _HostState, probe: bool = True) -> None:
+        """`probe=False` clears the failure run without counting toward a rate
+        increase — for answers that are final but not 2xx, e.g. a 404."""
         with state.lock:
             state.consecutive_fail = 0
             state.breaker_trips = 0
+            if not probe:
+                return
             state.consecutive_ok += 1
             if state.consecutive_ok >= _PROBE_AFTER and state.rate < state.max_rate:
                 state.rate = min(state.max_rate, state.rate * _PROBE_FACTOR)
