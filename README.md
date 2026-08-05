@@ -144,6 +144,7 @@ non-US tickers Bing is often the only source returning anything.
 - Storage moved from SQLite to Postgres. `backend/import_sqlite.py` carries an
   old `data/stocky.db` across, once, into an empty database.
 - A WebSocket push channel replaced polling for cache invalidation.
+- Seed data of 12,000 + stocks to choose from when initialising the app
 
 ## Where the detail lives
 
