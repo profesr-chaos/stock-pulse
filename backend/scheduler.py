@@ -32,8 +32,8 @@ scheduler.add_job(
 scheduler.add_job(jobs.aggregate_sentiment, "cron", hour=22, minute=0, id="sentiment")
 scheduler.add_job(jobs.prune, "cron", hour=3, minute=30, id="prune")
 
-# The instrument catalogue barely changes, and needs Trading212 keys at all.
-scheduler.add_job(jobs.refresh_catalogue, "cron", day_of_week="mon", hour=4, id="catalogue")
+# No catalogue job: instruments arrive from Yahoo search when one is followed
+# (see routes/watchlist.py), so there is nothing to bulk refresh.
 
 
 def main() -> None:

@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 import db
 import jobs
+from services import symbols
 
 from .schemas import Ok, StockList, require_symbol, to_stock
 
@@ -34,11 +35,22 @@ def add(body: AddRequest, background: BackgroundTasks):
     The backfill (a month of prices and news) runs in the background so the
     request returns straight away, and the feed fills in rather than sitting
     empty until the next hourly refresh.
+
+    A symbol we have never stored is looked up on Yahoo and written to the
+    catalogue here — this is the only path that adds instruments, so the
+    catalogue is exactly what someone has followed.
     """
     symbol = require_symbol(body.symbol)
 
     if not db.stocks.get_stock(symbol):
-        raise HTTPException(status_code=404, detail=f"{symbol} is not in the instrument catalogue")
+        # Exact ticker only: the search fallback offers Yahoo's fuzzy hits, but
+        # following one must store the instrument that was asked for.
+        found = next((r for r in symbols.lookup(symbol) if r["short_name"] == symbol), None)
+        if not found:
+            raise HTTPException(status_code=404, detail=f"{symbol} is not a known instrument")
+        # Exchange and currency are left to the backfill's resolution pass,
+        # which ranks listings properly rather than trusting the first hit.
+        db.stocks.upsert_stock(symbol, found["name"], found["type"])
 
     if len(db.watchlist.get_symbols()) >= MAX_WATCHLIST:
         raise HTTPException(status_code=400, detail=f"Watchlist is limited to {MAX_WATCHLIST} stocks")

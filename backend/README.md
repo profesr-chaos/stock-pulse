@@ -38,6 +38,18 @@ scheduler racing each other is fine. There is no migration framework: the schema
 is one `CREATE TABLE IF NOT EXISTS` block in `db/connection.py`, and a column
 change means editing that block and applying the `ALTER` yourself.
 
+A brand new database seeds itself from `seed/catalogue.json` on first start, so
+local search answers before you have followed anything. It happens only when
+`stocks` is empty — an existing catalogue is never merged into — and
+`STOCKY_SEED_ON_START=0` turns it off, leaving search to fall straight through
+to Yahoo as it always did. To load a file by hand, or a different one:
+
+```bash
+python seed_catalogue.py [path/to/catalogue.json]    # idempotent
+```
+
+See [The instrument catalogue](#the-instrument-catalogue).
+
 ### Coming from the SQLite build
 
 `import_sqlite.py` moves an old `data/stocky.db` across, ids and all:
@@ -159,12 +171,93 @@ The scheduler ticks every five minutes but `jobs.refresh_prices` drops most of
 those back to hourly once every market is shut. A closed market's price cannot
 move, so polling it is load on someone else's servers for an unchanged number.
 
+## The instrument catalogue
+
+There is no instrument list to install and nothing to bulk refresh. The
+catalogue is whatever has been searched for and followed:
+
+1. `GET /stocks/search` answers from the `stocks` table.
+2. If those results don't contain the **exact ticker** searched for, it also
+   asks Yahoo search (`symbols.lookup`) and puts those hits first. Nothing is
+   stored: search is a pure read, so the table never fills with half-typed
+   queries.
+3. `POST /watchlist` looks the symbol up again and writes the row, exact ticker
+   only. That is the one path that creates a stock.
+
+The trigger in step 2 is a missing ticker, not an empty result, and the
+difference is the whole feature. A catalogue holding wrappers — `3SAM` is
+"Leverage Shares -3x Short Amazon AMZN", and there are five more like it —
+answers a search for `AMZN` with six rows while holding no Amazon at all.
+Falling back only on a blank result would hand that user a triple-short ETP and
+never ask Yahoo for the company. Hits already stored are skipped by
+`short_name` *and* by resolved `yahoo_symbol`, so a stock held as `6RJ0` and
+resolved to `RKLB` isn't offered a second time under its Yahoo name.
+
+A database from before this change also holds ~15k instruments from a
+Trading212 bulk load, which is why some rows carry local codes like `6RJ0` and a
+currency that disagrees with the price. Those keys are gone. The rows are
+harmless — resolution corrects them, and step 2 covers whatever they missed.
+
+### The seed file
+
+`seed/catalogue.json` makes local search useful on a cold database. Nothing
+depends on it: the app works from an empty catalogue, and loading it, skipping
+it, or re-loading it after a rebuild are all fine.
+
+It is built by `build_catalogue.py`, which resolves each row of a local
+catalogue through the same `symbols.resolve` the app uses: rank the candidate
+listings by exchange, then confirm the winner actually returns a quote.
+
+**This is what makes the file publishable.** The input is a broker's export,
+whose instrument codes are its own; the output is keyed on Yahoo's symbol and
+carries only Yahoo's symbol, name, type and currency. `CHV` becomes `CVX`,
+`ZEG` becomes `AZN`, `WOSG` becomes `WOSG.L` — on the Trading212 export, 64% of
+rows resolved to a symbol different from the one they went in as, and the
+originals survive only in `data/catalogue_progress.jsonl`, which is local and
+gitignored. The several local codes that reach one instrument also collapse
+onto a single row, deduplicated on the resolved symbol with the best exchange
+rank winning.
+
+One row per line inside the JSON array, so regenerating the file produces a
+line-by-line diff rather than one 10,000-symbol blob.
+
+Three things the sweep taught us, all now enforced in the script:
+
+- **`--rate` is the throttle, not `--workers`.** Both pin Yahoo's two hostnames
+  to a fixed requests-per-second at start *and* ceiling, so the adaptive rate
+  cannot probe upward into the throttling that killed every earlier attempt.
+  Workers only hide latency now. Yahoo publishes no limit for these endpoints,
+  so the sustainable rate is empirical — calibrate with `--limit 800` and raise
+  it a rung at a time while `throttled` stays 0 and the hit rate stays ≥ 90%.
+- **An open circuit is waited out, not raced.** An open breaker answers
+  instantly with `None`, so a throttle used to burn `MISS_STREAK_ABORT` rows in
+  milliseconds and abort a multi-hour run over a 45-second cooldown.
+- **Only successes are checkpointed as done.** Misses are written for the record
+  but retried on the next run, because the common cause of a miss is throttling
+  rather than a ticker that does not exist.
+
+Run it with `STOCKY_SCRAPE_MAX_RETRIES=1`: at the default 3, one throttled URL
+produces four consecutive failures by itself, one short of the breaker
+threshold.
+
+Resolution keeps the best listing by the exchange hierarchy, which is not always
+the primary one: BYD resolves to its thin Vienna line because the ranking puts
+European venues above Asian. Fine for pricing, occasionally odd to read.
+
+Only instrument types we can actually price and find news for survive the
+lookup (equities, ETFs, funds, indices) — Yahoo will happily also answer with
+crypto, FX and futures. Yahoo's `quoteType` is mapped to the catalogue's own
+vocabulary (`EQUITY` → `STOCK`) so a fresh row sorts alongside the old ones,
+and anything not ticker-shaped is dropped before it can become a `short_name`
+inside an outbound scraper URL.
+
 ## Exchange normalisation
 
-The same company trades on many venues in many currencies, and the Trading212
-catalogue is not a reliable guide to which one: it lists TSLA as an EUR
-instrument. So listings are resolved against Yahoo search and ranked by exchange
-in `services/symbols.py`:
+The same company trades on many venues in many currencies, and the catalogue is
+not a reliable guide to which one: the Trading212 rows list TSLA as an EUR
+instrument, and a fresh lookup only knows the first listing Yahoo offered. So
+listings are resolved against Yahoo search and ranked by exchange in
+`services/symbols.py`:
 
 ```
 US primary → London → XETRA → rest of western Europe → Canada
@@ -174,8 +267,8 @@ US primary → London → XETRA → rest of western Europe → Canada
 The winner is confirmed to actually return a quote before being cached. Two
 rules earn their keep:
 
-- Local codes get a second search **by company name**. Trading212 calls Rocket
-  Lab `6RJ0`, and only a name search surfaces `RKLB` on NASDAQ.
+- Local codes get a second search **by company name**. The Trading212 rows call
+  Rocket Lab `6RJ0`, and only a name search surfaces `RKLB` on NASDAQ.
 - LSE International Board tickers (they all start with a digit, e.g. `0NCA.L`)
   are demoted. Yahoo labels them plain "LSE", but they are cross-listings that
   barely trade: IVU's London line had 15 daily bars in a month where its XETRA
@@ -352,10 +445,10 @@ Everything has a working default. No key is required.
 | `STOCKY_QUOTE_STALE_MINUTES` | `15` | Serve a stored quote under this age, refresh behind the response |
 | `STOCKY_NEWS_REFRESH_MINUTES` | `60` | News cadence |
 | `STOCKY_SENTIMENT` | `vader` | `vader` or `finbert` |
+| `STOCKY_SEED_ON_START` | `true` | Load `seed/catalogue.json` into an empty `stocks` table on startup |
 | `STOCKY_SEC_CONTACT` | none | An email address; enables SEC EDGAR |
 | `DSEEK` | none | DeepSeek key for AI summaries and impact grading |
 | `STOCKY_DEEPSEEK_MODEL` | `deepseek-v4-flash` | Override when an alias is retired |
-| `212pk` / `212sk` | none | Trading212, only to refresh the catalogue |
 
 The two AI toggles are not in this table on purpose: they live in the database
 and are set from the UI or `PUT /config`.
@@ -368,14 +461,13 @@ and are set from the UI or `PUT /config`.
 | `refresh_news` | Hourly | New articles, images, sentiment, impact grading |
 | `aggregate_sentiment` | Daily 22:00 UTC | Rebuild daily rollups |
 | `prune` | Daily 03:30 UTC | Retention |
-| `refresh_catalogue` | Weekly | Trading212 instruments (needs keys) |
 | `backfill_stock` | On follow | A month of prices and news |
 
 ## Tests
 
 ```bash
 createdb stocky_test   # once; STOCKY_TEST_DSN overrides the default
-poetry run pytest      # 548 tests, no network access
+poetry run pytest      # 557 tests, no network access
 ```
 
 Nothing in the suite touches a third party. The scraper is driven through

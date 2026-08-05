@@ -1,9 +1,8 @@
 """All configuration in one place, env-driven, with defaults that work out of the box.
 
 Single-user local tool: no auth, no paid API keys required. The only optional
-keys are DSEEK (DeepSeek, for AI summaries) and 212pk/212sk (Trading212, only
-needed to refresh the instrument catalogue — 15k instruments are already cached
-in the DB).
+key is DSEEK (DeepSeek, for AI summaries); STOCKY_SEC_CONTACT is an email, not
+a credential. Everything else is scraped from public endpoints.
 """
 import os
 from pathlib import Path
@@ -88,6 +87,9 @@ SCRAPE_MAX_RETRIES = _int("STOCKY_SCRAPE_MAX_RETRIES", 3)
 SCRAPE_CONCURRENCY = _int("STOCKY_SCRAPE_CONCURRENCY", 8)      # total in-flight requests
 SCRAPE_CACHE_TTL = _float("STOCKY_SCRAPE_CACHE_TTL", 300.0)    # seconds
 FETCH_ARTICLE_IMAGES = _flag("STOCKY_FETCH_ARTICLE_IMAGES", True)
+# Load seed/catalogue.json into an empty stocks table on startup. Off means a
+# fresh database starts empty and fills up as you follow things.
+SEED_ON_START = _flag("STOCKY_SEED_ON_START", True)
 IMAGE_FETCH_LIMIT = _int("STOCKY_IMAGE_FETCH_LIMIT", 12)       # per stock per refresh
 
 # ── Sentiment ────────────────────────────────────────────────────────────
@@ -117,17 +119,7 @@ DEEPSEEK_BASE_URL = os.getenv("STOCKY_DEEPSEEK_URL", "https://api.deepseek.com")
 # `deepseek-chat` this used to hardcode went away on 2026-07-24 and every
 # summary silently started failing. Changing a model should not need a deploy.
 DEEPSEEK_MODEL = os.getenv("STOCKY_DEEPSEEK_MODEL", "deepseek-v4-flash")
-T212_KEY = os.getenv("212pk") or None
-T212_SECRET = os.getenv("212sk") or None
-T212_INSTRUMENTS_URL = os.getenv(
-    "STOCKY_T212_URL",
-    "https://demo.trading212.com/api/v0/equity/metadata/instruments",
-)
 
 
 def ai_enabled() -> bool:
     return bool(DEEPSEEK_KEY)
-
-
-def t212_enabled() -> bool:
-    return bool(T212_KEY and T212_SECRET)

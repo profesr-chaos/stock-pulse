@@ -5,8 +5,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 import db
 import settings
-from normalize import now_utc, parse_datetime
-from services import prices
+from normalize import clean_symbol, now_utc, parse_datetime
+from services import prices, symbols
 
 from .schemas import (
     PricePoint,
@@ -22,10 +22,41 @@ from .schemas import (
 
 router = APIRouter(prefix="/stocks", tags=["Stocks"])
 
+# Stored hits and Yahoo hits are concatenated, so cap the total. Matches the
+# default limit db.stocks.search_stocks applies on its own.
+_SEARCH_LIMIT = 25
+
 
 @router.get("/search", response_model=StockList)
 def search(q: str = Query(..., min_length=1, max_length=64)):
-    return StockList(results=[to_stock(s) for s in db.stocks.search_stocks(q.strip())])
+    """Stored instruments first, then Yahoo for anything we have never seen.
+
+    The trigger is a missing *exact ticker*, not an empty result. An empty
+    result is rare and a bad signal: the catalogue is full of wrappers carrying
+    the underlying's name, so deleting AMZN still leaves six rows matching
+    "AMZN" — `3SAM` (Leverage Shares -3x Short Amazon) among them. Falling back
+    only on a blank would answer that search with a triple-short ETP and never
+    consult Yahoo for the company itself.
+
+    Nothing is written here. A looked-up instrument becomes a `stocks` row only
+    when it is actually followed, which keeps the catalogue free of every
+    half-typed query and keeps search a pure read.
+    """
+    query = q.strip()
+    results = db.stocks.search_stocks(query)
+
+    if not any(r["short_name"] == clean_symbol(query) for r in results):
+        # Skip anything already stored, by short_name *and* by resolved symbol:
+        # Rocket Lab is stored as `6RJ0` resolved to `RKLB`, and offering both
+        # would let someone follow the same company twice.
+        stored = {r["short_name"] for r in results}
+        stored |= {r["yahoo_symbol"] for r in results if r.get("yahoo_symbol")}
+        found = [r for r in symbols.lookup(query) if r["short_name"] not in stored]
+        # Yahoo's relevance ordering goes first: it puts the underlying above
+        # the derivatives, which is the whole point of asking it.
+        results = found + results
+
+    return StockList(results=[to_stock(s) for s in results[:_SEARCH_LIMIT]])
 
 
 @router.get("/sectors", response_model=SectorList)

@@ -17,6 +17,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 import db
 import jobs
+import seed_catalogue
 import settings
 from routes.insights import router as insights_router
 from routes.news import events_router, router as news_router
@@ -29,6 +30,7 @@ from routes.ws import router as ws_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.create_tables()
+    seed_catalogue.seed_if_empty()
     # Finish any backfill interrupted by a restart, off the request path so
     # startup isn't blocked on network I/O.
     threading.Thread(target=jobs.catch_up, name="catch-up", daemon=True).start()

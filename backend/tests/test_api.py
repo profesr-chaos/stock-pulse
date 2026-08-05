@@ -63,6 +63,88 @@ class TestSearch:
         assert client.get("/stocks/search?q=zzzznotathing").json()["results"] == []
 
 
+class TestSearchFallsBackToYahoo:
+    """Nothing bulk loads the catalogue any more, so an instrument nobody has
+    followed yet exists only on Yahoo. If this fallback breaks, every newly
+    listed ticker is unfindable and unfollowable."""
+
+    HIT = {"symbol": "NEWCO", "longname": "NewCo Holdings Inc",
+           "quoteType": "EQUITY", "exchange": "NMS", "sector": "Technology",
+           "industry": "Software - Infrastructure"}
+
+    def test_a_catalogue_miss_is_answered_from_yahoo(self, client, yahoo_quotes):
+        yahoo_quotes["NEWCO"] = [self.HIT]
+        results = client.get("/stocks/search?q=NEWCO").json()["results"]
+        assert [r["symbol"] for r in results] == ["NEWCO"]
+        assert results[0]["name"] == "NewCo Holdings Inc"
+        assert results[0]["type"] == "STOCK"      # EQUITY mapped to our vocabulary
+        assert results[0]["sector"] == "Technology"
+
+    def test_a_stored_exact_ticker_skips_yahoo_entirely(self, client, yahoo_quotes):
+        """The fast path. A stored ticker must not be topped up with Yahoo's
+        other listings, or every search grows a tail of foreign lines for the
+        same company — and pays a network call to get them."""
+        yahoo_quotes["AAPL"] = [{"symbol": "AAPL.MX", "longname": "Apple Inc",
+                                 "quoteType": "EQUITY", "exchange": "MEX"}]
+        results = client.get("/stocks/search?q=AAPL").json()["results"]
+        assert [r["symbol"] for r in results] == ["AAPL"]
+
+    def test_a_derivative_name_match_does_not_hide_the_underlying(
+            self, client, yahoo_quotes):
+        """The regression this whole fallback exists for. The catalogue is full
+        of wrappers carrying the underlying's name, so a missing AMZN still
+        matches six rows locally — `3SAM` is "Leverage Shares -3x Short Amazon
+        AMZN". A non-empty local result is therefore no proof we hold the
+        company, and only an exact-ticker test catches it."""
+        db.stocks.bulk_upsert_stocks([
+            {"shortName": "3SAM", "name": "Leverage Shares -3x Short Amazon AMZN",
+             "type": "ETF", "currencyCode": "GBX"},
+            {"shortName": "AMZD", "name": "IncomeShares Amazon AMZN Options",
+             "type": "ETF", "currencyCode": "GBX"},
+        ])
+        yahoo_quotes["AMZN"] = [{"symbol": "AMZN", "longname": "Amazon.com, Inc.",
+                                 "quoteType": "EQUITY", "exchange": "NMS"}]
+
+        results = client.get("/stocks/search?q=AMZN").json()["results"]
+        symbols_returned = [r["symbol"] for r in results]
+        assert symbols_returned[0] == "AMZN", "the company must outrank its ETPs"
+        assert "3SAM" in symbols_returned, "stored matches are kept, not replaced"
+
+    def test_a_resolved_stock_is_not_offered_twice(self, client, yahoo_quotes):
+        """6RJ0 is Rocket Lab's stored German line, resolved to RKLB. Yahoo
+        answers a name search with RKLB, and offering both would let someone
+        follow the same company twice under two symbols."""
+        yahoo_quotes["ROCKET"] = [{"symbol": "RKLB", "longname": "Rocket Lab Corporation",
+                                   "quoteType": "EQUITY", "exchange": "NMS"}]
+        symbols_returned = [r["symbol"]
+                            for r in client.get("/stocks/search?q=rocket").json()["results"]]
+        assert "RKLB" not in symbols_returned
+        assert "6RJ0" in symbols_returned
+
+    def test_searching_does_not_write_to_the_catalogue(self, client, yahoo_quotes):
+        """Search is a read. Rows arrive when something is followed, otherwise
+        the catalogue fills up with half-typed queries."""
+        yahoo_quotes["NEWCO"] = [self.HIT]
+        client.get("/stocks/search?q=NEWCO")
+        assert db.stocks.get_stock("NEWCO") is None
+
+    def test_things_we_cannot_price_are_dropped(self, client, yahoo_quotes):
+        """Yahoo answers with crypto, FX and futures too; none of them survive
+        the news and price pipeline, so they never reach the results."""
+        yahoo_quotes["BTC"] = [
+            {"symbol": "BTC-USD", "longname": "Bitcoin USD", "quoteType": "CRYPTOCURRENCY"},
+            {"symbol": "BTCUSD=X", "longname": "BTC/USD", "quoteType": "CURRENCY"},
+        ]
+        assert client.get("/stocks/search?q=BTC").json()["results"] == []
+
+    def test_a_malformed_symbol_from_yahoo_is_dropped(self, client, yahoo_quotes):
+        """Whatever comes back becomes a short_name, and short_names reach
+        outbound scraper URLs."""
+        yahoo_quotes["ODD"] = [{"symbol": "A;DROP TABLE", "longname": "Nope",
+                                "quoteType": "EQUITY"}]
+        assert client.get("/stocks/search?q=ODD").json()["results"] == []
+
+
 class TestSectors:
     """Sector filtering, which only works because resolution stores Yahoo's
     classification on the stock row."""
@@ -474,8 +556,31 @@ class TestWatchlistRoutes:
     def test_adding_twice_is_409(self, client):
         assert client.post("/watchlist", json={"symbol": "AAPL"}).status_code == 409
 
-    def test_adding_something_not_in_the_catalogue_is_404(self, client):
+    def test_adding_something_yahoo_has_never_heard_of_is_404(self, client):
         assert client.post("/watchlist", json={"symbol": "NOSUCH"}).status_code == 404
+
+    def test_following_an_unstored_instrument_adds_it_to_the_catalogue(
+            self, client, yahoo_quotes):
+        """The only path that writes a stock row. Break it and nothing outside
+        the pre-existing catalogue can ever be followed."""
+        yahoo_quotes["NEWCO"] = [{"symbol": "NEWCO", "longname": "NewCo Holdings Inc",
+                                  "quoteType": "EQUITY", "exchange": "NMS"}]
+        assert client.post("/watchlist", json={"symbol": "newco"}).status_code == 201
+
+        row = db.stocks.get_stock("NEWCO")
+        assert row["name"] == "NewCo Holdings Inc"
+        assert row["type"] == "STOCK"
+        assert row["yahoo_symbol"] is None      # resolution is the backfill's job
+        assert "NEWCO" in db.watchlist.get_symbols()
+
+    def test_only_the_exact_ticker_is_followed(self, client, yahoo_quotes):
+        """Yahoo answers a ticker query with near misses. Following ZZZZ must
+        not quietly store and follow ZZZZ.L instead."""
+        yahoo_quotes["ZZZZ"] = [{"symbol": "ZZZZ.L", "longname": "Something Else plc",
+                                 "quoteType": "EQUITY", "exchange": "LSE"}]
+        assert client.post("/watchlist", json={"symbol": "ZZZZ"}).status_code == 404
+        assert db.stocks.get_stock("ZZZZ.L") is None
+        assert db.watchlist.get_symbols() == ["AAPL", "6RJ0"]
 
     def test_adding_a_malformed_symbol_is_400(self, client):
         assert client.post("/watchlist", json={"symbol": "A;DROP"}).status_code == 400
