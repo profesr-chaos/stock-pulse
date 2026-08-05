@@ -25,12 +25,18 @@ class FakeClock:
         self.slept.append(seconds)
         self.now += seconds
 
+    def frozen_sleep(self, seconds: float) -> None:
+        """Record the wait without advancing. Lets sequential calls stand in for
+        concurrent waiters: every caller sees the same `now`, exactly as threads
+        arriving together do."""
+        self.slept.append(seconds)
+
 
 def make_scraper(handler, clock=None, **kwargs) -> Scraper:
     clock = clock or FakeClock()
     scraper = Scraper(
         transport=httpx.MockTransport(handler),
-        clock=clock, sleep=clock.sleep,
+        clock=clock, sleep=kwargs.pop("sleep", clock.sleep),
         max_retries=kwargs.pop("max_retries", 2),
         cache_ttl=kwargs.pop("cache_ttl", 300.0),
         **kwargs,
@@ -171,15 +177,58 @@ class TestAdaptiveRate:
         scraper.get("https://example.com/a")
         assert state.fingerprint != before
 
-    def test_token_bucket_paces_requests(self):
+    def test_limiter_paces_sustained_requests(self):
         clock = FakeClock()
         scraper = make_scraper(ok, clock=clock)
         state = scraper._state("example.com")
-        state.rate = 2.0                       # 2 per second
-        state.tokens = 1.0
-        for i in range(4):
+        state.rate = state.max_rate = 2.0      # 2 per second, pinned so the
+        for i in range(10):                    # probe can't confuse the pacing
             scraper.get(f"https://example.com/{i}")
-        assert any(s > 0 for s in clock.slept), "expected the limiter to pace"
+        # One burst second is spendable up front (3 slots at 2/s: -1.0s, -0.5s,
+        # now), then every request waits out its own 0.5s slot.
+        assert clock.slept == [0.5] * 7
+        assert clock.now == 1003.5
+
+    def test_concurrent_waiters_reserve_distinct_slots(self):
+        """The regression test for `nominal rate × worker count`.
+
+        With a frozen clock no caller's wait is observed by the next, which is
+        what threads arriving together do. The old bucket handed all of them the
+        same wait and let them fire as one; distinct slots must stagger them.
+        """
+        clock = FakeClock()
+        scraper = make_scraper(ok, clock=clock, sleep=clock.frozen_sleep)
+        state = scraper._state("example.com")
+        state.rate = 1.0
+        for i in range(5):
+            scraper.get(f"https://example.com/{i}")
+        # Two go on the burst allowance, the rest queue a second apart. The old
+        # code gave [1.0, 1.0, 1.0] — three waiters landing on the same instant.
+        assert clock.slept == [1.0, 2.0, 3.0]
+
+    def test_a_404_storm_does_not_probe_the_rate_upward(self):
+        """`resolve(validate=True)` 404s by design, so miss-heavy traffic used to
+        walk every host up to its ceiling."""
+        clock = FakeClock()
+        scraper = make_scraper(lambda r: httpx.Response(404, text="nope"),
+                               clock=clock, sleep=clock.frozen_sleep)
+        state = scraper._state("example.com")
+        before = state.rate
+        for i in range(40):
+            scraper.get(f"https://example.com/{i}")
+        assert state.rate == before
+        assert state.blocked_until == 0.0, "a 404 is an answer, not a failure"
+
+    def test_a_404_still_clears_a_failure_run(self):
+        responses = [httpx.Response(500, text=""), httpx.Response(404, text="")]
+
+        def handler(_request):
+            return responses.pop(0) if responses else httpx.Response(404, text="")
+
+        scraper = make_scraper(handler, max_retries=1)
+        state = scraper._state("example.com")
+        scraper.get("https://example.com/a")
+        assert state.consecutive_fail == 0
 
 
 class TestRetries:
